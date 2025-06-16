@@ -1,0 +1,16 @@
+mcp[cli]
+fastapi
+slowapi
+ibm_watson_machine_learning
+langchain-deepseek
+langchain-tavily
+langchain-ollama
+langchain-community
+langgraph
+langchain
+
+# For Google OAuth SSO
+flask
+pyopenssl
+google-auth
+requests
