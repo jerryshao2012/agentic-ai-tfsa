@@ -191,6 +191,21 @@ def document_agent(state: AgentState):
       "needs_current_search": true/false
     }}
     """
+
+    # Unified prompt for automation
+    """
+    I have a [TYPE_OF_INPUT] and I want to automate [THIS_SPECIFIC_TASK].
+    Here are the constraints:
+    - It should be efficient, scalable, and easy to reuse
+    - The output should be clean and ready for the next step in a workflow
+    - If the task includes transformation or formatting, follow industry best practices
+
+    Can you give me:
+    - A clean, modular Python script that performs this
+    - A list of libraries I need and why
+    - Suggestions for how I could improve or scale it later
+    """
+
     response = llm.invoke(prompt)
     try:
         data = json.loads(response.content.strip() if hasattr(response, 'content') else response.strip())
