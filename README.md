@@ -8,7 +8,7 @@ pip install "mcp[cli]"
 mcp run tfsa_mcp_server.py
 mcp dev tfsa_mcp_server.py
 # This command not install server well. Need to manually update configuration file claude_desktop_config.json
-mcp install /Users/jerryshao/Documents/docs/Software/AI/structured-language-extraction/agentic_workflow/tsfa/tfsa_mcp_server.py --name "TFSA Assistant" -f /Users/jerryshao/Documents/docs/Software/AI/structured-language-extraction/.env
+mcp install /PATH_TO_PROJECT/tsfa/tfsa_mcp_server.py --name "TFSA Assistant" -f /Users/jerryshao/Documents/docs/Software/AI/structured-language-extraction/.env
 ```
 claude_desktop_config.json
 ```json
