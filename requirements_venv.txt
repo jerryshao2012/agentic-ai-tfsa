@@ -1,13 +1,14 @@
 mcp[cli]
 fastapi
 slowapi
-ibm_watson_machine_learning
+ibm-watson-machine-learning
 langchain-deepseek
 langchain-tavily
 langchain-ollama
 langchain-community
 langgraph
 langchain
+langchain-mcp-adapters
 
 # For Google OAuth SSO
 flask
