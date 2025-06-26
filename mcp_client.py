@@ -1,7 +1,9 @@
 import asyncio
+import os
 import shlex
 from typing import Annotated, List
 
+from dotenv import load_dotenv
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.schema import HumanMessage
 from langchain_mcp_adapters.tools import load_mcp_tools
@@ -14,12 +16,14 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from typing_extensions import TypedDict
 
-from dotenv import load_dotenv
-import os
 load_dotenv('.env')
 
 # MCP server launch config
-server_params = StdioServerParameters(command="python", args=["tfsa_mcp_server.py"], env=dict(os.environ))
+server_params = StdioServerParameters(
+    command="python",
+    args=["tfsa_mcp_server.py", "e_transfer_mcp_server.py"],
+    env=dict(os.environ))
+
 
 # LangGraph state definition
 class State(TypedDict):
@@ -157,7 +161,7 @@ async def handle_prompt(session, tools, command, agent):
         # Execute the prompt via the agent
         agent_response = await agent.ainvoke(
             {"messages": [HumanMessage(content=prompt_text)]},
-            config={"configurable": {"thread_id": "tfsa-session"}}
+            config={"configurable": {"thread_id": "financial-assistant-session"}}
         )
         print("\n=== Prompt Result ===")
         print(agent_response["messages"][-1].content)
@@ -174,7 +178,7 @@ async def main():
             tools = await load_mcp_tools(session)
             agent = await create_graph(session)
 
-            print("TFSA MCP agent is ready.")
+            print("TFSA & e-transfer MCP agent is ready.")
             print("Type a question or use the following templates:")
             print("  /prompts                - to list available prompts")
             print("  /prompt <name> \"args\"   - to run a specific prompt")
@@ -201,7 +205,7 @@ async def main():
                 try:
                     response = await agent.ainvoke(
                         {"messages": user_input},
-                        config={"configurable": {"thread_id": "tfsa-session"}}
+                        config={"configurable": {"thread_id": "financial-assistant-session"}}
                     )
                     print("AI:", response["messages"][-1].content)
                 except Exception as e:
