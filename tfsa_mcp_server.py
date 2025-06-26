@@ -28,6 +28,7 @@ mcp = FastMCP(
 @mcp.tool()
 def check_contribution_room(user_id: Annotated[str, "bank user ID"]) -> Dict:
     """Check user's available TFSA contribution room"""
+    print(f"[{datetime.now().isoformat()}] Tool called: check_contribution_room with parameters: user_id='{user_id}'")
     try:
         result = run_tfsa_assistant("What's my contribution room?", user_id)
         return {
@@ -47,6 +48,8 @@ def check_contribution_room(user_id: Annotated[str, "bank user ID"]) -> Dict:
 def execute_contribution(user_input: Annotated[str, "User input contains a contribution transaction amount"],
                          user_id: Annotated[str, "bank user ID"]) -> Dict:
     """Execute TFSA contribution transaction with an amount"""
+    print(
+        f"[{datetime.now().isoformat()}] Tool called: execute_contribution with parameters: user_input='{user_input}', user_id='{user_id}'")
     try:
         result = run_tfsa_assistant(user_input, user_id)
 
@@ -84,6 +87,7 @@ def execute_contribution(user_input: Annotated[str, "User input contains a contr
 @mcp.prompt()
 def explain_tfsa_rules(query: str) -> str:
     """Explain TFSA rules in simple terms"""
+    print(f"[{datetime.now().isoformat()}] Prompt called: explain_tfsa_rules with parameters: query='{query}'")
     return f"""
     As a financial educator, explain TFSA rules focusing on:
     - Contribution limits
@@ -118,6 +122,8 @@ def get_tfsa_advice(user_input: str, user_id: str = "user_123") -> Dict:
         User ID: {user_id}
         Query: {user_input}
     """
+    print(
+        f"[{datetime.now().isoformat()}] Resource called: get_tfsa_advice with parameters: user_input='{user_input}', user_id='{user_id}'")
     try:
         # Execute workflow
         result = run_tfsa_assistant(user_input, user_id)
@@ -158,6 +164,7 @@ def get_tfsa_advice(user_input: str, user_id: str = "user_123") -> Dict:
 @mcp.resource("tfsa-annual://limit")
 def get_tfsa_annual_dollar_limit() -> str:
     """The annual Tax-Free Savings Account (TFSA) dollar limit for each of the years from 2009 to 2025"""
+    print(f"[{datetime.now().isoformat()}] Resource called: get_tfsa_annual_dollar_limit with parameters: (none)")
     return """
         Annual limit for 2009-2012: $5000
         Annual limit for 2013-2014: $5500

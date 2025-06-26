@@ -197,7 +197,7 @@ async def main():
             tools = await load_mcp_tools(session)
             agent = await create_graph(session)
 
-            print("TFSA MCP agents are ready.")
+            print("TFSA MCP agent is ready.")
             print("Type a question or use the following templates:")
             print("  /tools                  - to list available tools")
             print("  /prompts                - to list available prompts")
