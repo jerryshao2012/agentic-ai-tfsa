@@ -21,7 +21,7 @@ load_dotenv('.env')
 # MCP server launch config
 server_params = StdioServerParameters(
     command="python",
-    args=["tfsa_mcp_server.py", "e_transfer_mcp_server.py"],
+    args=["tfsa_mcp_server.py"],
     env=dict(os.environ))
 
 
@@ -40,14 +40,20 @@ async def create_graph(session):
     llm_with_tools = llm.bind_tools(tools)
 
     prompt_template = ChatPromptTemplate.from_messages([
-        ("system", "You are a helpful assistant that uses tools to explore TSFA."),
+        ("system", "You are a helpful assistant that uses tools to explore the client's TSFA needs."),
         MessagesPlaceholder("messages")
     ])
 
     chat_llm = prompt_template | llm_with_tools
 
     def chat_node(state: State) -> State:
-        state["messages"] = chat_llm.invoke({"messages": state["messages"]})
+        # Ensure messages are in a list format
+        if not isinstance(state["messages"], list):
+            state["messages"] = [state["messages"]]
+        # Get AI response
+        message = chat_llm.invoke({"messages": state["messages"]})
+        # Update state with new AI message
+        state["messages"].append(message)
         return state
 
     graph = StateGraph(State)
@@ -112,6 +118,19 @@ async def handle_resource(session, command):
         print("Resource fetch failed:", e)
 
 
+async def list_tools(tools):
+    try:
+        if not tools or not isinstance(tools, list):
+            print("No tools found on the server.")
+            return
+
+        print("\nAvailable Tools:")
+        for tool in tools:
+            print(f"[{tool.name}] {tool.description}")
+    except Exception as e:
+        print("Failed to list tools:", e)
+
+
 async def list_prompts(session):
     prompt_response = await session.list_prompts()
 
@@ -130,7 +149,7 @@ async def list_prompts(session):
     print("\nUse: /prompt <prompt_name> \"arg1\" \"arg2\" ...")
 
 
-async def handle_prompt(session, tools, command, agent):
+async def handle_prompt(session, _tools, command, agent):
     parts = shlex.split(command.strip())
     if len(parts) < 2:
         print("Usage: /prompt <name> \"args>\"")
@@ -161,7 +180,7 @@ async def handle_prompt(session, tools, command, agent):
         # Execute the prompt via the agent
         agent_response = await agent.ainvoke(
             {"messages": [HumanMessage(content=prompt_text)]},
-            config={"configurable": {"thread_id": "financial-assistant-session"}}
+            config={"configurable": {"thread_id": "tfsa-session"}}
         )
         print("\n=== Prompt Result ===")
         print(agent_response["messages"][-1].content)
@@ -178,8 +197,9 @@ async def main():
             tools = await load_mcp_tools(session)
             agent = await create_graph(session)
 
-            print("TFSA & e-transfer MCP agent is ready.")
+            print("TFSA MCP agents are ready.")
             print("Type a question or use the following templates:")
+            print("  /tools                  - to list available tools")
             print("  /prompts                - to list available prompts")
             print("  /prompt <name> \"args\"   - to run a specific prompt")
             print("  /resources              - to list available resources")
@@ -189,6 +209,9 @@ async def main():
                 user_input = input("\nYou: ").strip()
                 if user_input.lower() in {"exit", "quit", "q"}:
                     break
+                elif user_input.startswith("/tools"):
+                    await list_tools(tools)
+                    continue
                 elif user_input.startswith("/prompts"):
                     await list_prompts(session)
                     continue
@@ -205,7 +228,7 @@ async def main():
                 try:
                     response = await agent.ainvoke(
                         {"messages": user_input},
-                        config={"configurable": {"thread_id": "financial-assistant-session"}}
+                        config={"configurable": {"thread_id": "tfsa-session"}}
                     )
                     print("AI:", response["messages"][-1].content)
                 except Exception as e:
