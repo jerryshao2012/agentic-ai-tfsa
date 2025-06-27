@@ -1,3 +1,5 @@
+# Add command-line support
+import argparse
 import asyncio
 import os
 import shlex
@@ -235,5 +237,27 @@ async def main():
                     print("Error:", e)
 
 
+async def main_async(user_input: str):
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            _tools = await load_mcp_tools(session)
+            agent = await create_graph(session)
+
+            response = await agent.ainvoke(
+                {"messages": user_input},
+                config={"configurable": {"thread_id": "e-transfer-cli-session"}}
+            )
+            # Print AI response with prefix for parsing
+            print("AI:", response["messages"][-1].content)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--message", type=str, help="Direct message to process")
+    args = parser.parse_args()
+
+    if args.message:
+        asyncio.run(main_async(args.message))
+    else:
+        asyncio.run(main())

@@ -28,6 +28,7 @@ load_dotenv('.env')
 
 # Configuration for Ollama. Initialize Ollama with qwen2.5vl:7b model locally
 from langchain_ollama import ChatOllama
+
 llm = ChatOllama(
     model="qwen2.5vl:7b",
     # other params...

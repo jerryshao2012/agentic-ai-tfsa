@@ -9,6 +9,7 @@ langchain-community
 langgraph
 langchain
 langchain-mcp-adapters
+streamlit
 
 # For Google OAuth SSO
 flask
