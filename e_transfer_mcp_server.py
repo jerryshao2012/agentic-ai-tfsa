@@ -17,6 +17,7 @@ mcp = FastMCP(
     version="1.0.0"
 )
 
+
 # ==============================================
 # resources, tools, and prompts to be added here
 #
@@ -43,6 +44,7 @@ def check_e_transfer_limit(user_id: Annotated[str, "bank user ID"]) -> Dict:
             "user_id": user_id,
             "timestamp": datetime.now().isoformat()
         }
+
 
 @mcp.tool()
 def increase_limit(user_input: Annotated[str, "User input contains a contribution transaction amount"],
@@ -78,6 +80,36 @@ def increase_limit(user_input: Annotated[str, "User input contains a contributio
     except Exception as e:
         return {
             "error": f"Increase limit failed: {str(e)}",
+            "user_id": user_id,
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@mcp.resource("etransfer-service://{user_input}/{user_id}")
+def handle_etransfer_request(user_input: str, user_id: str = "user_456") -> Dict:
+    """Endpoint for handling e-Transfer related requests"""
+    print(
+        f"[{datetime.now().isoformat()}] Resource called: handle_etransfer_request with parameters: user_input='{user_input}', user_id='{user_id}'")
+    try:
+        # Execute workflow
+        result = run_etransfer_limit_increase(user_input, user_id)
+
+        # Prepare response
+        if result.get("new_limit"):
+            return {
+                "success": True,
+                "new_limit": result["new_limit"],
+                "response": result["messages"][-1]["content"] if result.get("messages") else "Limit increased"
+            }
+        else:
+            return {
+                "success": False,
+                "reason": result.get("eligibility_reason", "Eligibility check failed"),
+                "response": result["messages"][-1]["content"] if result.get("messages") else "Request failed"
+            }
+    except Exception as e:
+        return {
+            "error": f"Request failed: {str(e)}",
             "user_id": user_id,
             "timestamp": datetime.now().isoformat()
         }

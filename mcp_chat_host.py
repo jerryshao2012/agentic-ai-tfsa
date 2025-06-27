@@ -4,7 +4,7 @@ import subprocess
 from typing import Tuple, List, Dict
 
 import streamlit as st
-from langchain_community.llms import Ollama
+from langchain_ollama import OllamaLLM
 
 # Configuration
 MCP_CLIENTS = {
@@ -13,7 +13,7 @@ MCP_CLIENTS = {
 }
 
 # Initialize a local LLM for client selection
-llm = Ollama(model="deepseek-coder:latest")
+llm = OllamaLLM(model="deepseek-coder:latest")
 
 
 def classify_query(user_input: str) -> str:

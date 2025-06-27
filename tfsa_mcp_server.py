@@ -111,16 +111,16 @@ def explain_tfsa_rules(query: str) -> str:
 @mcp.resource("tfsa-advice://{user_input}/{user_id}")
 def get_tfsa_advice(user_input: str, user_id: str = "user_123") -> Dict:
     """
-        As a certified TFSA specialist, respond to user queries using these guidelines:
-        1. Verify contribution room before suggesting amounts
-        2. Mention penalty risks for over-contributions
-        3. Provide current year's contribution limit
-        4. Explain withdrawal recontribution rules
-        5. Always include transaction ID when applicable
+    As a certified TFSA specialist, respond to user queries using these guidelines:
+    1. Verify contribution room before suggesting amounts
+    2. Mention penalty risks for over-contributions
+    3. Provide current year's contribution limit
+    4. Explain withdrawal recontribution rules
+    5. Always include transaction ID when applicable
 
-        Current Date: {current_date}
-        User ID: {user_id}
-        Query: {user_input}
+    Current Date: {datetime.now().date()}
+    User ID: {user_id}
+    Query: {user_input}
     """
     print(
         f"[{datetime.now().isoformat()}] Resource called: get_tfsa_advice with parameters: user_input='{user_input}', user_id='{user_id}'")
