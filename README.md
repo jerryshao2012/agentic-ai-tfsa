@@ -115,6 +115,12 @@ cp .env.example .env
 # Edit .env with your actual values
 ```
 
+Note: to enable git push documents
+```shell
+git config http.postBuffer 524288000
+git push
+```
+
 ### Running the System
 1. Start MCP servers (in separate terminals):
 ```bash
