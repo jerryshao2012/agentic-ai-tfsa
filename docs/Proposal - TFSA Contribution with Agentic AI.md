@@ -1,7 +1,7 @@
 ### Updated Proposal: TFSA Contribution with Agentic AI
 
 **Team Name**: Transformer Architects  
-**Submission Date**: July 10, 2025  
+**Submission Date**: July 11, 2025  
 
 ---
 
@@ -9,7 +9,7 @@
 The Agentic TFSA Assistant addresses critical financial literacy gaps affecting 80% of Canadians who misunderstand TFSA rules, resulting in $230M/year in penalties and 500K+ avoidable bank calls. Our solution transforms this complex financial product into an accessible, secure, and compliant experience through AI-powered conversation.  
 
 The assistant provides three core value propositions:  
-1. **Real-time Compliance** - Validates actions against live CRA regulations using policy agents trained on 10,000+ regulatory documents  
+1. **Real-time Compliance** - Validates actions against live CRA regulations using policy agents trained on regulatory documents  
 2. **Personalized Guidance** - Calculates contribution room using individual financial profiles and simulates tax implications  
 3. **Seamless Execution** - Processes transactions with bank-grade security while generating FINTRAC-compliant audit trails  
 
@@ -89,22 +89,22 @@ def sanitize_input(query):
 
 ### Integrations Required in Phase 2  
 
-| Integration | Required | Notes |  
-|-------------|----------|-------|  
-| Aha | ❌ | |  
-| Amplitude | ❌ | |  
-| Ariba | ❌ | |  
-| Box | ❌ | |  
-| EPM | ❌ | |  
-| GitHub | ✅ | CI/CD pipeline |  
-| Jira | ❌ | |  
-| Microsoft 365 | ❌ | |  
-| Salesforce | ❌ | |  
-| Salesloft | ❌ | |  
-| SAP | ❌ | |  
-| Slack | ❌ | |  
-| ServiceNow | ❌ | |  
-| **Other** | ✅ | **RBC Banking APIs (sandbox), CRA Data Gateway, FINTRAC Reporting API** |  
+| Integration | Required | Notes                                                                                  |  
+|-------------|----------|----------------------------------------------------------------------------------------|  
+| Aha | ❌ |                                                                                        |  
+| Amplitude | ❌ |                                                                                        |  
+| Ariba | ❌ |                                                                                        |  
+| Box | ❌ |                                                                                        |  
+| EPM | ❌ |                                                                                        |  
+| GitHub | ✅ | CI/CD pipeline                                                                         |  
+| Jira | ❌ |                                                                                        |  
+| Microsoft 365 | ❌ |                                                                                        |  
+| Salesforce | ❌ |                                                                                        |  
+| Salesloft | ❌ |                                                                                        |  
+| SAP | ❌ |                                                                                        |  
+| Slack | ❌ |                                                                                        |  
+| ServiceNow | ❌ |                                                                                        |  
+| **Other** | ✅ | **Mock RBC Banking APIs (sandbox), Mock CRA Data Gateway, Mock FINTRAC Reporting API** |  
 
 **Key Integration Details**:  
 1. **RBC Banking APIs**  
