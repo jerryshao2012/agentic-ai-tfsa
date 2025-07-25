@@ -7,9 +7,9 @@ import datetime
 import os
 from typing import Any, Dict
 
-from ibm_watsonx_orchestrate.agent_builder.connections import ConnectionType, ExpectedCredentials
+# from ibm_watsonx_orchestrate.agent_builder.connections import ConnectionType, ExpectedCredentials
 from ibm_watsonx_orchestrate.agent_builder.tools import tool, ToolPermission
-from ibm_watsonx_orchestrate.run import connections
+# from ibm_watsonx_orchestrate.run import connections
 # TODO: Withdrawal simulation agent
 # TODO: Contribution optimization advisor
 # TODO: Multi-year projection tool
@@ -38,7 +38,11 @@ def _get_llm() -> WatsonxLLM:
 ###############################################################################
 @tool(name="retrieve_user_profile", permission=ToolPermission.READ_ONLY)
 def retrieve_user_profile(user_id: str) -> Dict[str, Any]:
-    """Retrieve the user’s profile from the bank database."""
+    """Retrieve the user’s profile from the bank database.
+    :param user_id: The user's unique identifier.
+    :returns: The user's profile, including user_id, name, age, residency_status, sin, first_tfsa_year,
+        past_contributions, withdrawals_last_year, current_year_contributions and checking_balance
+    """
     # Mock implementation - replace with actual DB call or API
     # TODO: Add JWT validation using PyJWT for user sessions
     # TODO: Integrate with bank's SSO system
@@ -61,21 +65,24 @@ def retrieve_user_profile(user_id: str) -> Dict[str, Any]:
 ###############################################################################
 @tool(name="search_cra_tfsa_policy",
       permission=ToolPermission.READ_ONLY,
-      expected_credentials=[ExpectedCredentials(
-          app_id="tavily_search",
-          type=ConnectionType.API_KEY_AUTH
-      )])
+      # expected_credentials=[ExpectedCredentials(
+      #     app_id="tavily_search",
+      #     type=ConnectionType.API_KEY_AUTH
+      # )]
+      )
 def search_cra_tfsa_policy(query: str) -> Dict[str, Any]:
     """
     Search the Canada Revenue Agency (CRA) website for the most recent TFSA
     policy information and return structured JSON.
+    :param query: The user's query question.
+    :returns: The search result, including current_year and search_results.
     """
     # pip install -U langchain-tavily
     from langchain_tavily import TavilySearch
-    import json
 
-    tavily_search_connection = connections.api_key_auth("tavily_search")
-    tavily = TavilySearch(tavily_api_key=tavily_search_connection.api_key, max_results=3)
+    # tavily_search_connection = connections.api_key_auth("tavily_search")
+    # tavily = TavilySearch(tavily_api_key=tavily_search_connection.api_key, max_results=3)
+    tavily = TavilySearch(tavily_api_key="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", max_results=3)
     current_year = datetime.datetime.now().year
     # Real-time policy verification using Tavily search
     results = tavily.invoke({
@@ -87,7 +94,7 @@ def search_cra_tfsa_policy(query: str) -> Dict[str, Any]:
 
     return {
         "current_year": current_year,
-        "search_results": json.dumps(results, indent=2)
+        "search_results": results
     }
 
 
@@ -96,7 +103,11 @@ def search_cra_tfsa_policy(query: str) -> Dict[str, Any]:
 ###############################################################################
 @tool(name="execute_tfsa_contribution", permission=ToolPermission.WRITE_ONLY)
 def execute_tfsa_contribution(user_id: str, amount: float) -> Dict[str, Any]:
-    """Execute a TFSA contribution transaction from the user’s chequing account."""
+    """Execute a TFSA contribution transaction from the user’s chequing account.
+    :param user_id: The user's unique identifier.
+    :param amount: Amount the user wants to contribute.
+    :returns: The transaction result, including status, new_balance, new_contributions, and transaction_id.
+    """
     # Mock implementation - replace with banking API
     # TODO: Encrypt PII data using AES-256
     # TODO: Add transaction confirmation step
@@ -119,7 +130,11 @@ def execute_tfsa_contribution(user_id: str, amount: float) -> Dict[str, Any]:
 ###############################################################################
 @tool(name="calculate_contribution_room", permission=ToolPermission.READ_ONLY)
 def calculate_contribution_room(user_id: str, current_limit: float) -> Dict[str, float]:
-    """Return the remaining TFSA contribution room."""
+    """Return the remaining TFSA contribution room.
+    :param user_id: The user's unique identifier.
+    :param current_limit: Current contribute limit amount.
+    :returns: The transaction result, including available_room and content.
+    """
     profile = retrieve_user_profile(user_id)
     current_year = datetime.datetime.now().year
 
@@ -137,6 +152,5 @@ def calculate_contribution_room(user_id: str, current_limit: float) -> Dict[str,
     available_room = total_room - used_room + profile["withdrawals_last_year"]
     return {
         "available_room": available_room,
-        "role": "calculation_agent",
         "content": f"Available contribution room: ${available_room:.2f}"
     }

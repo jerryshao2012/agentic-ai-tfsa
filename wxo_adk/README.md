@@ -63,7 +63,7 @@
    
    Note: use below command to renew a token to access watsonx Orchestrate
    ```shell
-   orchestrate env activate watsonx-challenge
+   orchestrate env activate watsonx-challenge --api-key <your_api_key>
    ```
    Note: Remove tools
    ```shell
@@ -94,5 +94,14 @@ orchestrate agents remove --name tfsa_policy_agent --kind native
 
 5. Test in the watsonx Orchestrate chat UI or via the external-chat provider.
    1. Deploy agents
-   2. Select agent
-   3. Test in watsonx Orchestrate chat UI
+   2. Select agent & test in watsonx Orchestrate chat UI
+   
+   Test FAQs
+   ```text
+   What are the annual dollar limits for each year of TSFA?
+   What are the overcontribution penalty policies?
+   What are withdrawal rules?
+   I want to contribute to my TFSA
+   My user ID is user_123. What is my contribution room for 2025?
+   Yes, I want to contribute $2000
+   ```
