@@ -1,0 +1,14 @@
+spec_version: v1
+kind: connection
+app_id: tavily_search
+environments:
+    draft:
+        kind: api_key
+        type: team
+        api_key: <tavily_search_api_key>
+        server_url: https://nan.com/
+    live:
+      kind: api_key
+      type: member
+      api_key: <tavily_search_api_key>
+      server_url: https://nan.com/

@@ -1,0 +1,10 @@
+# watsonx Orchestrate ADK
+ibm-watsonx-orchestrate>=1.0.0
+
+# LangChain stack (used inside tools)
+langchain
+langchain-core
+langchain-ibm
+langchain-tavily
+pydantic>=2.0.0
+python-dateutil

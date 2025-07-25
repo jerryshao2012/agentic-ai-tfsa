@@ -1,0 +1,18 @@
+###############################################################################
+# TFSA Calculation Agent
+###############################################################################
+spec_version: v1
+kind: native
+name: tfsa_calculation_agent
+display_name: TFSA Room Calculator
+description: >
+  Computes precise remaining TFSA contribution room using user id and the 
+  current CRA limit.
+instructions: |
+  1. Accept two inputs: `user_id` (str) and the current annual limit (float).
+  2. Return a JSON object: `{"available_room": <float>}`
+  3. If validation fails, respond with a short, friendly error message.
+llm: watsonx/meta-llama/llama-4-maverick-17b-128e-instruct-fp8
+style: default
+tools:
+  - calculate_contribution_room

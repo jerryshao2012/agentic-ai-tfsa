@@ -1,0 +1,18 @@
+###############################################################################
+# TFSA Transaction Agent
+###############################################################################
+spec_version: v1
+kind: native
+name: tfsa_transaction_agent
+display_name: TFSA Transaction Agent
+description: >
+  Moves money from the customer’s chequing account into their TFSA after
+  validating available room and balance.
+instructions: |
+  1. Accept two inputs: `user_id` (str) and `amount` (float).
+  2. If room ≥ amount and balance ≥ amount, call `execute_tfsa_contribution`.
+  3. Return a human-readable confirmation or an error explanation.
+llm: watsonx/meta-llama/llama-3-2-90b-vision-instruct
+style: react
+tools:
+  - execute_tfsa_contribution
