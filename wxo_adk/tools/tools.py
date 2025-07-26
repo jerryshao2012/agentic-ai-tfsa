@@ -86,7 +86,9 @@ def search_cra_tfsa_policy(query: str) -> Dict[str, Any]:
     current_year = datetime.datetime.now().year
     # Real-time policy verification using Tavily search
     results = tavily.invoke({
-        "query": f"""site:canada.ca * TFSA {current_year} contribution limit;\n* {query}""",
+        "query": "site:canada.ca * TFSA {current_year} contribution limit;\n* {query}".format(
+            current_year=current_year, query=query
+        ),
         "search_depth": "advanced",
         "include_answer": True,
         "include_raw_content": True
@@ -121,7 +123,10 @@ def execute_tfsa_contribution(user_id: str, amount: float) -> Dict[str, Any]:
         "status": "success",
         "new_balance": 6500 + new_contributions,
         "new_contributions": new_contributions,
-        "transaction_id": f"TFSA-{datetime.datetime.now().year}-{hash(str(datetime.datetime.now()))}"
+        "transaction_id": "TFSA-{year}-{hash_val}".format(
+            year=datetime.datetime.now().year,
+            hash_val=hash(str(datetime.datetime.now()))
+        )
     }
 
 
@@ -152,5 +157,5 @@ def calculate_contribution_room(user_id: str, current_limit: float) -> Dict[str,
     available_room = total_room - used_room + profile["withdrawals_last_year"]
     return {
         "available_room": available_room,
-        "content": f"Available contribution room: ${available_room:.2f}"
+        "content": "Available contribution room: ${:.2f}".format(available_room)
     }
