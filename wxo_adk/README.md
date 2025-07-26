@@ -1,16 +1,41 @@
 ## ✅ Steps – watsonx Orchestrate
 
-1. Install dependencies
+1. Installation
+   * Prerequisites
+     * **Python**: The programming language that the ADK is written in. The ADK requires at least Python 3.11, and the latest compatible version is Python 3.13. For more information, see [Python](https://www.python.org/downloads/).
+     * **Pip**: Pip is Python’s package manager. In some operating systems, it’s included with Python’s installation. For more information, see [Pip](https://pip.pypa.io/en/stable/installation/).
+     * Create and activate a virtual environment with venv to install the ADK. For more information, see [venv - Creation of virtual environments](https://docs.python.org/3/library/venv.html).
+   * Installing the ADK
+
+     On your local computer open your Terminal / Command Prompt and run the following commands:
+     1. For Mac users, install the ADK with pip:
+     ```shell
+     pip install ibm-watsonx-orchestrate
+     ```
+     2. For Windows users, you will need to setup a Windows Subsystem for Linux environment. Open PowerShell then run following:
+     ```shell
+     wsl --install
+     sudo apt-get update
+     sudo apt install python3-full
+     sudo python3 -m venv venv
+     source venv/bin/activate
+     pip3 install ibm-watsonx-orchestrate
+     sudo apt install net-tools
+     ```
+     3. Check watsonx Orchestrate CLI version
+     ```bash
+     orchestrate --version
+     ```
+     After installation, you can start using the ADK and its CLI. For more information on available commands and arguments, use the --help argument at the end of a command. For example: orchestrate --help.
+   * Installing dependencies   
    ```bash
    pip install -r requirements.txt
    ```
-   1.1 Check watsonx Orchestrate CLI version
-    ```bash
-    orchestrate --version
-    ```
    
 2. Setup remote watsonx Orchestrate
-   1. Using your watsonx Orchestrate account
+
+   In order to publish and deploy your agents and tools in this lab you need to connect to your watsonx Orchestrate environment. To do that you will need two credentials: your instance URL and your IBM cloud API key.
+   1. Create and download your API key & get the watsonx Orchestrate instance URL
       1. [Log in](https://www.ibm.com/docs/en/watsonx/watson-orchestrate/current?topic=orchestrate-logging-in-watsonx) to your watsonx Orchestrate account.
       2. Click your user profile and open the **Settings** page.
       3. Open the **API details** tab and click **Generate API key**.
@@ -30,7 +55,15 @@
    
    To activate a remote the watsonx Orchestrate environment with the ADK, run the following command in the CLI:
    ```shell
-   orchestrate env add -n watsonx-challenge -u <service_instance_url> --type ibm_iam --activate
+   orchestrate env add -n watsonx-challenge -u <service_instance_url> --type ibm_iam --activate --api-key <wxo_api_key>
+   ```
+   To make sure the orchestrate environment has been successfully created and activated you can run orchestrate env list.
+   ```shell
+   orchestrate env list
+   ```
+   You can list all LLMs installed in your watsonx Orchestrate environment:
+   ```shell
+   orchestrate models list
    ```
 
 2. Importing connections
