@@ -66,75 +66,94 @@
    orchestrate models list
    ```
 
-2. Importing connections
-   1. Create a connection yaml file:
-   ```yaml
-   spec_version: v1
-   kind: connection
-   app_id: tavily_search
-   environments:
-       draft:
-           kind: api_key
-           type: team
-           api_key: <tavily_search_api_key>
-           server_url: https://nan.com/
-       live:
-         kind: api_key
-         type: team
-         api_key: <tavily_search_api_key>
-         server_url: https://nan.com/
-   ```
-   2. Import the connection 
-   ```shell
-   orchestrate connections import --file tavily_search.yaml
-   ```
+2. Deployment steps
 
-3. Import tools with its requirements to agent
-   ```bash
-   orchestrate tools import -k python -r "requirements.txt" -f "tools.py" --app-id tavily_search
-   ```
-   
-   Note: use below command to renew a token to access watsonx Orchestrate
-   ```shell
-   orchestrate env activate watsonx-challenge --api-key <your_api_key>
-   ```
-   Note: Remove tools
-   ```shell
-   orchestrate tools remove -n search_cra_tfsa_policy
-   ```
-
-4. Import agents
-   ```bash
-   orchestrate agents import -f tfsa_policy_agent.yaml
-   orchestrate agents import -f tfsa_calculation_agent.yaml
-   orchestrate agents import -f tfsa_transaction_agent.yaml
-   orchestrate agents import -f tfsa_orchestrator_agent.yaml
-   ```
-
-Note: Download existing Agent
-```bash
-orchestrate agents export -n tfsa_calculation_agent -k external -o tfsa_calculation_agent.yaml --agent-only
-orchestrate agents export -n tfsa_calculation_agent -k external -o tfsa_calculation_agent.zip
-```
-
-Note: Remove existing Agent
-```bash
-orchestrate agents remove --name tfsa_orchestrator --kind native
-orchestrate agents remove --name tfsa_transaction_agent --kind native
-orchestrate agents remove --name tfsa_calculation_agent --kind native
-orchestrate agents remove --name tfsa_policy_agent --kind native
-```
-
-5. Test in the watsonx Orchestrate chat UI or via the external-chat provider.
-   1. Deploy agents
-   2. Select agent & test in watsonx Orchestrate chat UI
-   
-   Test FAQs
+   Project structure:
    ```text
-   What are the annual dollar limits for each year of TSFA?
-   What are the overcontribution penalty policies?
-   What are withdrawal rules?
-   I want to contribute to my TFSA
-   My user ID is user_123. What is my contribution room for 2025?
-   Yes, I want to contribute $2000
+   wxo_adk/
+   ├── agents/
+   │   ├── tfsa_calculation_agent.yaml
+   │   ├── tfsa_orchestrator_agent.yaml
+   │   ├── tfsa_policy_agent.yaml
+   │   ├── tfsa_transaction_agent.yaml
+   ├── tools/
+   │   ├── requirements.txt
+   │   ├── tavily_search.yaml.example
+   │   ├── tools.py
+   ├── .env.example
+   ├── demo.png
+   ├── README.md
    ```
+
+   1. Importing connections
+      1. Create a connection yaml file:
+      ```yaml
+      spec_version: v1
+      kind: connection
+      app_id: tavily_search
+      environments:
+          draft:
+              kind: api_key
+              type: team
+              api_key: <tavily_search_api_key>
+              server_url: https://nan.com/
+          live:
+            kind: api_key
+            type: team
+            api_key: <tavily_search_api_key>
+            server_url: https://nan.com/
+      ```
+      2. Import the connection 
+      ```shell
+      orchestrate connections import --file tavily_search.yaml
+      ```
+
+   2. Import tools with its requirements to agent
+      ```bash
+      orchestrate tools import -k python -r "requirements.txt" -f "tools.py" --app-id tavily_search
+      ```
+   
+      Note: use below command to renew a token to access watsonx Orchestrate
+      ```shell
+      orchestrate env activate watsonx-challenge --api-key <your_api_key>
+      ```
+      Note: Remove tools
+      ```shell
+      orchestrate tools remove -n search_cra_tfsa_policy
+      ```
+
+   3. Import agents
+      ```bash
+      orchestrate agents import -f tfsa_policy_agent.yaml
+      orchestrate agents import -f tfsa_calculation_agent.yaml
+      orchestrate agents import -f tfsa_transaction_agent.yaml
+      orchestrate agents import -f tfsa_orchestrator_agent.yaml
+      ```
+
+    Note: Download existing Agent
+    ```bash
+    orchestrate agents export -n tfsa_calculation_agent -k external -o tfsa_calculation_agent.yaml --agent-only
+    orchestrate agents export -n tfsa_calculation_agent -k external -o tfsa_calculation_agent.zip
+    ```
+    
+    Note: Remove existing Agent
+    ```bash
+    orchestrate agents remove --name tfsa_orchestrator --kind native
+    orchestrate agents remove --name tfsa_transaction_agent --kind native
+    orchestrate agents remove --name tfsa_calculation_agent --kind native
+    orchestrate agents remove --name tfsa_policy_agent --kind native
+    ```
+
+   4. Test in the watsonx Orchestrate chat UI or via the external-chat provider.
+      1. Deploy agents
+      2. Select agent & test in watsonx Orchestrate chat UI
+   
+      Test FAQs
+      ```text
+      What are the annual dollar limits for each year of TSFA?
+      What are the overcontribution penalty policies?
+      What are withdrawal rules?
+      I want to contribute to my TFSA
+      My user ID is user_123. What is my contribution room for 2025?
+      Yes, I want to contribute $2000
+      ```
