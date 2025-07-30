@@ -1,0 +1,15 @@
+# LangChain stack (used inside tools)
+fastapi
+uvicorn
+python-dotenv
+langgraph
+langchain
+langchain-community
+langchain-core
+langchain_openai
+langchain-ibm
+langchain-deepseek
+langchain-ollama
+langchain-tavily
+duckduckgo-search
+ibm-watsonx-ai
