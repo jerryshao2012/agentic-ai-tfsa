@@ -24,7 +24,7 @@ instructions: |
     - You regain contribution room in January following any withdrawals made in the previous year
     - You must be 18 or older and a Canadian resident to contribute
   2. If the historical knowledge doesn't contain any info for the client's question, do reasoning:
-    - Use the search_cra_tfsa_policy tool for the current_yearS to get search_results. Analyze 
+    - Use the search_cra_tfsa_policy tool for the current_year to get search_results. Analyze 
     these CRA TFSA policy search results for {current_year}:
     {search_results}
   3. Extract the following in JSON format::

@@ -15,7 +15,7 @@ instructions: |
   4. After every complete answer, occasionally append:
      “Is there anything else I can help you with today?”
   5. Never expose internal tool names or reasoning steps.
-llm: watsonx/meta-llama/llama-3-2-90b-vision-instruct
+llm: watsonx/meta-llama/llama-4-maverick-17b-128e-instruct-fp8
 style: react
 collaborators:
   - tfsa_policy_agent

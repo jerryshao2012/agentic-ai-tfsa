@@ -7,9 +7,7 @@ import datetime
 import os
 from typing import Any, Dict
 
-# from ibm_watsonx_orchestrate.agent_builder.connections import ConnectionType, ExpectedCredentials
 from ibm_watsonx_orchestrate.agent_builder.tools import tool, ToolPermission
-# from ibm_watsonx_orchestrate.run import connections
 # TODO: Withdrawal simulation agent
 # TODO: Contribution optimization advisor
 # TODO: Multi-year projection tool
@@ -64,12 +62,7 @@ def retrieve_user_profile(user_id: str) -> Dict[str, Any]:
 # 2. CRA real-time policy search
 ###############################################################################
 @tool(name="search_cra_tfsa_policy",
-      permission=ToolPermission.READ_ONLY,
-      # expected_credentials=[ExpectedCredentials(
-      #     app_id="tavily_search",
-      #     type=ConnectionType.API_KEY_AUTH
-      # )]
-      )
+      permission=ToolPermission.READ_ONLY)
 def search_cra_tfsa_policy(query: str) -> Dict[str, Any]:
     """
     Search the Canada Revenue Agency (CRA) website for the most recent TFSA
@@ -80,8 +73,6 @@ def search_cra_tfsa_policy(query: str) -> Dict[str, Any]:
     # pip install -U langchain-tavily
     from langchain_tavily import TavilySearch
 
-    # tavily_search_connection = connections.api_key_auth("tavily_search")
-    # tavily = TavilySearch(tavily_api_key=tavily_search_connection.api_key, max_results=3)
     tavily = TavilySearch(tavily_api_key="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", max_results=3)
     current_year = datetime.datetime.now().year
     # Real-time policy verification using Tavily search

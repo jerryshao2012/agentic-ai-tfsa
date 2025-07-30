@@ -12,7 +12,7 @@ instructions: |
   1. Accept two inputs: `user_id` (str) and the current annual limit (float).
   2. Return a JSON object: `{"available_room": <float>}`
   3. If validation fails, respond with a short, friendly error message.
-llm: watsonx/meta-llama/llama-4-maverick-17b-128e-instruct-fp8
+llm: watsonx/meta-llama/llama-3-2-90b-vision-instruct
 style: default
 tools:
   - calculate_contribution_room

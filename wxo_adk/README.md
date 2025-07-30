@@ -55,7 +55,7 @@
    
    To activate a remote the watsonx Orchestrate environment with the ADK, run the following command in the CLI:
    ```shell
-   orchestrate env add -n watsonx-challenge -u <service_instance_url> --type ibm_iam --activate --api-key <wxo_api_key>
+   orchestrate env add -n watsonx-challenge -u <service_instance_url> --type ibm_iam --activate
    ```
    To make sure the orchestrate environment has been successfully created and activated you can run orchestrate env list.
    ```shell
@@ -85,7 +85,7 @@
    ├── README.md
    ```
 
-   1. Importing connections
+   1. Importing connections (Connection in reserved TechZone itz-watsonx-event-006 is not working. Omit this step.)
       1. Create a connection yaml file:
       ```yaml
       spec_version: v1
@@ -109,6 +109,12 @@
       ```
 
    2. Import tools with its requirements to agent
+      
+      Connection in reserved TechZone itz-watsonx-event-006 is not working. Avoid using it:
+      ```bash
+      orchestrate tools import -k python -r "requirements.txt" -f "tools.py"
+      ```
+      Note: for backup
       ```bash
       orchestrate tools import -k python -r "requirements.txt" -f "tools.py" --app-id tavily_search
       ```
@@ -150,7 +156,7 @@
    
       Test FAQs
       ```text
-      What are the annual dollar limits for each year of TSFA?
+      What are the annual dollar limits for each year of TSFA including 2025?
       What are the overcontribution penalty policies?
       What are withdrawal rules?
       I want to contribute to my TFSA
