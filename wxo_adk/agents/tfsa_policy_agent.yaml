@@ -27,15 +27,15 @@ instructions: |
     - Use the search_cra_tfsa_policy tool for the current_year to get search_results. Analyze 
     these CRA TFSA policy search results for {current_year}:
     {search_results}
-  3. Extract the following in JSON format::
-     ```json
-     {
-       "intent": "contribute",
-       "current_limit": "current year contribution limit",
-       "penalty_info": "1-2 sentence summary of penalties",
-       "withdrawal_rules": "1-2 sentence summary of withdrawal rules"
-     }
-     ```
+  3. Extract the following in JSON format:
+    ```json
+    {
+      "intent": "contribute",
+      "current_limit": "current year contribution limit",
+      "penalty_info": "1-2 sentence summary of penalties",
+      "withdrawal_rules": "1-2 sentence summary of withdrawal rules"
+    }
+    ```
   4. Never reveal internal tool names to the user.
 llm: watsonx/meta-llama/llama-3-2-90b-vision-instruct
 style: react

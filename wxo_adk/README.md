@@ -23,12 +23,12 @@
      sudo apt install net-tools
      ```
      3. Check watsonx Orchestrate CLI version
-     ```bash
+     ```shell
      orchestrate --version
      ```
      After installation, you can start using the ADK and its CLI. For more information on available commands and arguments, use the --help argument at the end of a command. For example: orchestrate --help.
    * Installing dependencies   
-   ```bash
+   ```shell
    pip install -r requirements.txt
    ```
    
@@ -110,12 +110,12 @@
 
    2. Import tools with its requirements to agent
       
-      Connection in reserved TechZone itz-watsonx-event-006 is not working. Avoid using it:
-      ```bash
+      Connection in reserved TechZone itz-watsonx-event-006 is not working. Avoid using it, use itz-watsonx-event-004 instead:
+      ```shell
       orchestrate tools import -k python -r "requirements.txt" -f "tools.py"
       ```
       Note: for backup
-      ```bash
+      ```shell
       orchestrate tools import -k python -r "requirements.txt" -f "tools.py" --app-id tavily_search
       ```
    
@@ -129,7 +129,7 @@
       ```
 
    3. Import agents
-      ```bash
+      ```shell
       orchestrate agents import -f tfsa_policy_agent.yaml
       orchestrate agents import -f tfsa_calculation_agent.yaml
       orchestrate agents import -f tfsa_transaction_agent.yaml
@@ -137,13 +137,13 @@
       ```
 
     Note: Download existing Agent
-    ```bash
+    ```shell
     orchestrate agents export -n tfsa_calculation_agent -k external -o tfsa_calculation_agent.yaml --agent-only
     orchestrate agents export -n tfsa_calculation_agent -k external -o tfsa_calculation_agent.zip
     ```
     
     Note: Remove existing Agent
-    ```bash
+    ```shell
     orchestrate agents remove --name tfsa_orchestrator --kind native
     orchestrate agents remove --name tfsa_transaction_agent --kind native
     orchestrate agents remove --name tfsa_calculation_agent --kind native
