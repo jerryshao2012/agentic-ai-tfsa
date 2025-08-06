@@ -7,7 +7,7 @@ import logging
 import os
 from typing import Dict, Any
 
-import httpx
+import requests
 from ibm_watsonx_orchestrate.agent_builder.tools import tool, ToolPermission
 
 logger = logging.getLogger(__name__)
@@ -27,10 +27,21 @@ TFSA_BASE_URL = os.getenv(
 def _post_tfsa(path: str, payload: Dict[str, Any], timeout: int = 90) -> str:
     url = f"{TFSA_BASE_URL.rstrip('/')}{path}"
     logger.info("POST %s with payload %s", url, payload)
-    with httpx.Client(timeout=timeout) as client:
-        resp = client.post(url, json=payload)
-        resp.raise_for_status()
-        return resp.text
+
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'text/plain'
+    }
+    query_params = {}
+    response = requests.post(
+        url,
+        headers=headers,
+        params=query_params,
+        json=payload,
+        timeout=timeout
+    )
+    response.raise_for_status()
+    return response.text
 
 
 # ------------------------------------------------------------------
@@ -63,8 +74,8 @@ if __name__ == "__main__":
     print("=== Policy Question ===\nWhat are the annual dollar limits for each year of TSFA?")
 
     start_time = time.time()
-    response = get_tfsa_advice("What are the annual dollar limits for each year of TSFA?")
-    print(response)
+    advice_response = get_tfsa_advice("What are the annual dollar limits for each year of TSFA?")
+    print(advice_response)
     print(
         "\n=== Request finished in %.3f seconds ==="
         % (time.time() - start_time)
