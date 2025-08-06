@@ -15,8 +15,8 @@ class ModelName(str, Enum):
     watsonx_mistral_large = "mistralai/mistral-large"
     watsonx_llama_3_1_405b = "meta-llama/llama-3-405b-instruct"
     watsonx_llama_3_2_90b = "meta-llama/llama-3-2-90b-vision-instruct"
-    # ibm/granite-13b-instruct-v2 has tools support
-    watsonx_granite_13b_v2 = "ibm/granite-13b-instruct-v2"
+    # ibm/granite-3-3-8b-instruct has tools support
+    watsonx_granite_3_3_8b_instruct = "ibm/granite-3-3-8b-instruct"
 
 
 class ToolName(str, Enum):

@@ -1,0 +1,18 @@
+###############################################################################
+# TFSA TFSA LangGraph External Agent
+###############################################################################
+spec_version: v1
+kind: native
+name: tfsa_langgraph_external_agent
+display_name: TFSA LangGraph External Agent
+description: >
+  Answers TFSA-related questions using certified policy knowledge.
+instructions: |
+  1. Analyze user questions about TFSA rules, limits, or strategies
+  2. Invoke langgraph_get_tfsa_advice with the exact user input
+  3. Return the tool's response verbatim
+  4. Conclude with: "Is there anything else I can help with?"
+llm: watsonx/meta-llama/llama-3-2-90b-vision-instruct
+style: default
+tools:
+  - langgraph_get_tfsa_advice
