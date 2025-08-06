@@ -122,3 +122,14 @@ orchestrate agents import -f tfsa_langgraph_external_agent.yaml
    - The results from the external agent should be streamed to the IBM watsonx Orchestrate chat window
 
 ![Alt text](./chat_external_agent.png "Example of a chat to the external agent from IBM watsonx Orchestrate")
+
+Test FAQs
+```text
+What are the annual dollar limits for each year of TSFA?
+What are the annual dollar limits for each year of TSFA including 2025?
+What are the overcontribution penalty policies?
+What are withdrawal rules?
+I want to contribute to my TFSA
+My user ID is user_123. What is my contribution room for 2025?
+Yes, I want to contribute $2000
+```

@@ -1,5 +1,5 @@
 """
-tools.py – TFSA LangGraph Assistant tools for watsonx Orchestrate
+tools_langgraph.py – TFSA LangGraph Assistant tools for watsonx Orchestrate
 """
 from __future__ import annotations
 
@@ -60,10 +60,10 @@ if __name__ == "__main__":
     # Synchronous test execution
     import time
 
-    print("=== Policy Question ===\nWhat are the annual dollar limits for each year of TSFA, including 2025?")
+    print("=== Policy Question ===\nWhat are the annual dollar limits for each year of TSFA?")
 
     start_time = time.time()
-    response = get_tfsa_advice("What are the annual dollar limits for each year of TSFA, including 2025?")
+    response = get_tfsa_advice("What are the annual dollar limits for each year of TSFA?")
     print(response)
     print(
         "\n=== Request finished in %.3f seconds ==="
