@@ -1,5 +1,4 @@
 # tfsa_assistant_api.py
-import hashlib
 import logging
 from datetime import datetime
 from typing import Dict, Any, Optional, Annotated
@@ -10,13 +9,14 @@ from pydantic import BaseModel
 
 from security import get_current_user
 from tfsa_assistant import run_tfsa_assistant_sync, run_tfsa_assistant_stream
-from cache import Cache
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
 router = APIRouter(prefix="", tags=["TFSA"])
 
-cache = Cache.instance("tfsa")
 
 class ExtraBody(BaseModel):
     thread_id: str = None
@@ -51,31 +51,18 @@ def get_tfsa_advice(payload: UserInputRequest,
         thread_id = x_ibm_thread_id
     if payload.extra_body and payload.extra_body.thread_id:
         thread_id = payload.extra_body.thread_id
-    logger.info("thread_id: %s", thread_id)
+    logging.info("thread_id: %s", thread_id)
 
-    logger.info("TFSA get_tfsa_advice request: %s", payload.model_dump())
+    logging.info("TFSA get_tfsa_advice request: %s", payload.model_dump())
     user_id = payload.user_id
     user_input = payload.user_input
 
     # Create full user input with user ID
     full_input = f"My user ID is {user_id}. {user_input}" if user_id else user_input
 
-    logger.info(
+    logging.info(
         f"[{datetime.now().isoformat()}] Resource called: get_tfsa_advice with parameters: user_input='{full_input}'")
     try:
-        # Create unique cache id to avoid duplicate requests
-        cache_hash = hashlib.sha256(f"{full_input}".encode('UTF-8')).hexdigest()
-
-        if cache.contains(cache_hash):
-            response_text =  cache.load_from_cache(cache_hash)
-            if payload.stream:
-                return StreamingResponse(
-                    response_text,
-                    media_type="text/event-stream",
-                )
-
-            return PlainTextResponse(content=response_text)
-
         if payload.stream:
             return StreamingResponse(
                 run_tfsa_assistant_stream(full_input),
@@ -89,11 +76,10 @@ def get_tfsa_advice(payload: UserInputRequest,
         assistant_msgs = [msg['content'] for msg in result['messages']
                           if msg.get('role') == 'assistant']
         response_text = assistant_msgs[-1] if assistant_msgs else "No response generated"
-        cache.cache(cache_hash, response_text)
         return PlainTextResponse(content=response_text)
 
     except Exception as e:
-        logger.exception("TFSA processing failed")
+        logging.exception("TFSA processing failed")
         if payload.stream:
             def generate_error():
                 yield f"data: ❌ Processing error: {str(e)}\n\n"

@@ -1,6 +1,9 @@
 # config.py
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv('.env')
 # Default AI Services provider
 # AI_SERVICES_PROVIDER = os.getenv('AI_SERVICES_PROVIDER', 'ollama')
 

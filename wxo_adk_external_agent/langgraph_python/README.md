@@ -88,48 +88,93 @@ It is recommended to implement your own authentication security measures to ensu
            - Sync test
            ```shell
             curl -X 'POST' \
-              'https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/api/v1/get_tfsa_advice' \
+              'https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/chat/completions' \
               -H 'accept: application/json' \
+              -H 'Authorization: Bearer xxx' \
               -H 'Content-Type: application/json' \
-              -d '{"user_input": "What are the annual dollar limits for each year of TSFA, including 2025?"}'
+              -d '{
+              "model": "meta-llama/llama-3-2-90b-vision-instruct",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "What are the annual dollar limits for each year of TSFA, including 2025?"
+                }
+              ],
+              "stream": false
+            }'
            ```
            - Streaming test
            ```shell
              curl -X 'POST' \
-                'https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/api/v1/get_tfsa_advice' \
-                -H 'Content-Type: application/json' \
-                -d '{"user_input": "What are the annual dollar limits for each year of TSFA, including 2025?","stream": true}'
+              'https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/chat/completions' \
+              -H 'accept: application/json' \
+              -H 'Authorization: Bearer xxx' \
+              -H 'Content-Type: application/json' \
+              -d '{
+              "model": "meta-llama/llama-3-2-90b-vision-instruct",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "What are the annual dollar limits for each year of TSFA, including 2025?"
+                }
+              ],
+              "stream": true
+            }'
            ```
 
 ### Step 2: Deploy tools linked with the External Agent
 
-1. Import tools with its requirements to agent
+1. Import external agents
+Update `api_url` as needed in `tfsa_langgraph_external_agent.yaml`.
+- Example: `https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/chat/completions`
 ```shell
-orchestrate tools import -k python -r "requirements.txt" -f "tools_langgraph.py"
+orchestrate agents import -f tfsa_langgraph_external_agent.yaml
 ```
 
 2. Import agents
 ```shell
-orchestrate agents import -f tfsa_langgraph_external_agent.yaml
+orchestrate agents import -f connection_with_tfsa_external_agent.yaml
+```
+
+3. Deploy agents in watsonx Orchestrate UI
+ 
+```text
+    This option is not working as expected:
+    1. Import tools with its requirements to agent
+    ```shell
+    orchestrate tools import -k python -r "requirements.txt" -f "tools_langgraph.py"
+    ```
+    
+    2. Import agents in agents folder
+    ```shell
+    orchestrate agents import -f tfsa_langgraph_external_agent.yaml
+    ```
 ```
 
 ### Step 3: Call the new External Agent from Orchestrate
 
 1. **In IBM watsonx orchestrate Web UI:**
-   - From the top left hamburger menu, select **Agent Configuration**.
-   - Select **Chat** from the left-hand navigation.
-   - Type a question that should route to the new agent, like `What are the annual dollar limits for each year of TSFA including 2025?`
+   - From the top left hamburger menu, select **Chat** from the left-hand navigation.
+   - In the dropdown box, select `Connect to TFSA External Agent`
+   - Type a question that should route to the new agent, like `What are the annual dollar limits for each year of TSFA, including 2025?`
    - The results from the external agent should be streamed to the IBM watsonx Orchestrate chat window
 
-![Alt text](./chat_external_agent.png "Example of a chat to the external agent from IBM watsonx Orchestrate")
+![Chat External Agent](./chat_external_agent.png "Example of a chat to the external agent from IBM watsonx Orchestrate")
 
 Test FAQs
 ```text
 What are the annual dollar limits for each year of TSFA?
-What are the annual dollar limits for each year of TSFA including 2025?
+What are the annual dollar limits for each year of TSFA, including 2025?
 What are the overcontribution penalty policies?
 What are withdrawal rules?
 I want to contribute to my TFSA
 My user ID is user_123. What is my contribution room for 2025?
 Yes, I want to contribute $2000
 ```
+
+2. To check agent communication logs
+    - From Chat UI, select **Manage agents**
+    - Click right side button named **View all**
+   ![Build agents and tools->View all](./build_agents_and_tools_view_all.png "Example of View all from IBM watsonx Orchestrate")
+    - Click **Connect to TFSA External Agent**
+   ![Connect to TFSA External Agent->Trace Detail](./connect_to_tfsa_external agent_trace_detail.png "Example of Trace Detail from IBM watsonx Orchestrate")

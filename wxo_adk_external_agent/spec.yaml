@@ -4,88 +4,18 @@ info:
   description: |
     **watsonx Orchestrate–ready OpenAI-compatible endpoints for real-time, CRA-compliant TFSA operations.**
     
-    * `/api/v1/get_tfsa_advice` – answers any TFSA question (limits, withdrawal rules, strategy) and processes contributions using authenticated user context.  
+    * `/chat/completions` – answers any TFSA question (limits, withdrawal rules, strategy) and processes contributions using authenticated user context.  
     
     Endpoints **honour `X-IBM-THREAD-ID`** for multi-turn conversations, **stream via SSE** when `stream=true`, and require **JWT authentication**.  
     Plug this spec directly into watsonx Orchestrate or any OpenAI-compatible client.
-  version: 3.1.0
+  version: 3.2.0
 
 servers:
-  - url: https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/v1
+  - url: https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud
     description: TFSA assistant base URL (Code Engine)
 
 paths:
-  /api/v1/get_tfsa_advice:
-    post:
-      summary: Get TFSA advice
-      description: |
-        As a certified TFSA specialist, the agent:
-        1. Verifies contribution room before suggesting amounts
-        2. Mentions penalty risks for over-contributions
-        3. Provides current year's contribution limit
-        4. Explains withdrawal re-contribution rules
-        5. Includes transaction ID when processing contributions
-        
-        Uses JWT-authenticated user context - do not provide user_id in payload.
-      parameters:
-        - in: header
-          name: X-IBM-THREAD-ID
-          schema:
-            type: string
-          required: false
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - user_input
-              properties:
-                user_input:
-                  type: string
-                  example: "What are the annual dollar limits for each year of TFSA, including 2025?"
-                  description: Natural language question about TFSA
-                user_id:
-                  type: string
-                  description: Optional bank-unique customer ID for personalized advice
-                stream:
-                  type: boolean
-                  default: false
-                  description: Enable server-sent events streaming
-                extra_body:
-                  type: object
-                  properties:
-                    thread_id:
-                      type: string
-                      description: Alternative thread ID location
-      responses:
-        '200':
-          description: Successful response
-          content:
-            text/plain:
-              schema:
-                type: string
-                example: >
-                  Your available TFSA contribution room for 2024 is $5,500.
-                  • Total accumulated room: $25,500
-                  • Contributions to date: $20,000
-                  • Withdrawals added back: $0
-            text/event-stream:
-              schema:
-                $ref: '#/components/schemas/ThreadMessageDelta'
-        '401':
-          description: Unauthorized - missing/invalid credentials
-        '403':
-          description: Forbidden - insufficient permissions
-        '500':
-          description: Server error
-          content:
-            application/json:
-              schema:
-                type: string
-                example: "❌ Processing error: Failed to retrieve user profile"
-  /demo/chat/completions:
+  /chat/completions:
     post:
       summary: Generate chat completions
       description: Generate a response from the agent based on the user input, similar to the OpenAI chat completions endpoint.

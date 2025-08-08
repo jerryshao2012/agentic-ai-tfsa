@@ -1,10 +1,12 @@
 # tfsa_assistant.py
 import datetime
+import hashlib
 import json
 import logging
 import operator
 import os
 import re
+import time
 from typing import AsyncGenerator, TypedDict, Annotated, Optional
 
 from dotenv import load_dotenv
@@ -12,9 +14,13 @@ from langchain.tools import tool
 from langgraph.graph import StateGraph, END
 
 import config
+from cache import Cache
 from models import ModelName
 
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 # Reduces call center volume by 80%+
 # Processes contributions in <2 seconds
@@ -99,7 +105,7 @@ def get_json_from_str(json_str: str, fallback_json: dict) -> dict:
     try:
         return json.loads(json_str)
     except (json.JSONDecodeError, ValueError) as e:
-        logger.error(f"JSON parsing failed: {str(e)}")
+        logging.error(f"JSON parsing failed: {str(e)}")
         try:
             # First, try to extract JSON from Markdown code block
             code_block_match = re.search(r'```(?:json)?\s*({.*?})\s*```', json_str, re.DOTALL)
@@ -124,7 +130,7 @@ def get_json_from_str(json_str: str, fallback_json: dict) -> dict:
             # Parse the cleaned JSON
             return json.loads(code_block_match_json_str)
         except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"JSON parsing failed 2nd try: {str(e)}")
+            logging.error(f"JSON parsing failed 2nd try: {str(e)}")
             # Try to extract the first valid JSON object
             try:
                 start_idx = json_str.find('{')
@@ -227,6 +233,7 @@ def execute_tfsa_contribution(user_id: str, amount: float) -> dict:
 # ======================
 def profile_agent(state: AgentState):
     """Retrieves user profile and initializes state"""
+
     if not state.get("user_id"):
         # Don't require user ID for general questions
         return {
@@ -402,6 +409,14 @@ def search_agent(state: AgentState):
 
 def calculation_agent(state: AgentState):
     """Calculates contribution room based on profile and policies"""
+    # Check for user ID
+    if not state.get("user_id"):
+        return {
+            "messages": [{
+                "role": "assistant",
+                "content": "I need your user ID to process your contribution. Please provide your user ID."
+            }]
+        }
     # Dynamic contribution room calculation
     current_year = datetime.datetime.now().year
     profile = state["user_profile"]
@@ -468,6 +483,14 @@ def calculation_agent(state: AgentState):
 
 def transaction_agent(state: AgentState):
     """Handles transaction execution"""
+    # Check for user ID
+    if not state.get("user_id"):
+        return {
+            "messages": [{
+                "role": "assistant",
+                "content": "I need your user ID to check your contribution room. Please provide your user ID."
+            }]
+        }
     # TODO: Encrypt PII data using AES-256
     # TODO: Add transaction confirmation step
     # TODO: Implement fraud detection hooks
@@ -478,16 +501,6 @@ def transaction_agent(state: AgentState):
             "messages": [{
                 "role": "assistant",
                 "content": "I've gathered the information you requested about TFSA policies."
-            }]
-        }
-
-    # Extract user ID from state
-    user_id = state.get("user_id")
-    if not user_id:
-        return {
-            "messages": [{
-                "role": "assistant",
-                "content": "User ID not found. Please provide your user ID."
             }]
         }
 
@@ -576,8 +589,9 @@ def response_agent(state: AgentState):
     contribution_amount = state.get("contribution_amount", 0)
 
     # Prepare context for LLM
+    user_input = state["user_input"]
     context = {
-        "user_question": state["user_input"],
+        "user_question": user_input,
         "assistant_responses": "\n".join(assistant_messages),
         "policy_information": policy_info,
         "document_response": document_response,
@@ -630,8 +644,32 @@ def response_agent(state: AgentState):
             final_content = response.content.strip() if hasattr(response, 'content') else response.strip()
         else:
             final_content = llm.invoke(prompt)
+
+        # Patch final_content
+        final_content = final_content.replace("• ", "* ")
+        # Convert to lowercase for case-insensitive search
+        targets = ["response:", "answer:"]
+
+        for target in targets:
+            lower_content = final_content.lower()
+            # Find the first occurrence index
+            index = lower_content.find(target)
+
+            if index != -1:
+                # Extract content after "response:" including its original case
+                result = final_content[index + len(target):]
+                # Trim leading/trailing whitespace
+                final_content = result.strip()
+            else:
+                final_content = final_content.strip()
+
+        if len(final_content) > 0:
+            # Create unique cache id to avoid duplicate requests
+            cache_hash = hashlib.sha256(f"{user_input}".encode('UTF-8')).hexdigest()
+            # Only cache the policy user query
+            cache.cache(cache_hash, final_content, metadata={"user_input": user_input})
     except Exception as e:
-        logger.error(f"Response generation failed: {str(e)}")
+        logging.error(f"Response generation failed: {str(e)}")
         final_content = "\n".join(assistant_messages)  # Fallback to original messages
 
     return {
@@ -657,46 +695,78 @@ workflow.add_node("response_agent", response_agent)  # New response agent
 
 # Define edges
 workflow.set_entry_point("profile_agent")
-workflow.add_edge("profile_agent", "document_agent")
 
 
 # Conditional edges
-def after_document(state: AgentState):
-    if any(msg.get("needs_search", False) for msg in state["messages"] if isinstance(msg, dict)):
+def route_after_profile(state: AgentState):
+    """Decide next step after profile_agent"""
+    user_input = state["user_input"].lower()
+    # Handle calculation requests (contribution room)
+    if (re.search(r"contribution room|how much can i contribute|room available|limit available", user_input) or
+            "how much" in user_input and ("contribute" in user_input or "room" in user_input)):
+        return "calculation_agent"
+
+    # Handle transaction requests
+    if re.search(r"contribute|deposit|add|transfer|invest", user_input):
+        return "calculation_agent"  # Need room calculation first
+
+    return "document_agent"  # Go to response agent after document
+
+
+workflow.add_conditional_edges(
+    "profile_agent",
+    route_after_profile,
+    {
+        "document_agent": "document_agent",
+        "calculation_agent": "calculation_agent"
+    }
+)
+
+
+# Add edge from calculation_agent to transaction_agent when needed (lines 389-392)
+def route_after_calculation(state: AgentState):
+    """Decide next step after calculation"""
+    user_input = state["user_input"].lower()
+
+    # Handle transaction requests
+    transaction_keywords = r"contribute|deposit|add|transfer|invest|yes, i want"
+    if (re.search(transaction_keywords, user_input) or
+            any(word in user_input for word in ["proceed", "execute", "do it"])):
+        return "transaction_agent"
+    return END
+
+
+workflow.add_conditional_edges(
+    "calculation_agent",
+    route_after_calculation,
+    {
+        "transaction_agent": "transaction_agent",
+        END: END
+    }
+)
+
+
+def route_after_document(state: AgentState):
+    """Decide next step after document_agent"""
+    # Always search if needed
+    if any(msg.get("needs_search", False) for msg in state["messages"]):
         return "search_agent"
+
     return "response_agent"  # Go to response agent after document
 
 
 workflow.add_conditional_edges(
     "document_agent",
-    after_document,
-    {"search_agent": "search_agent", "response_agent": "response_agent"}
+    route_after_document,
+    {
+        "search_agent": "search_agent",
+        "response_agent": "response_agent"
+    }
 )
 
 workflow.add_edge("search_agent", "response_agent")  # Search goes to response
 
-
-# Add conditional edge after response
-def after_response(state: AgentState):
-    """Only go to calculation if we have a user profile"""
-    if state.get("user_profile") and re.search(r"contribute|deposit|room|limit", state["user_input"], re.IGNORECASE):
-        return "calculation_agent"
-    return END
-
-
-workflow.add_conditional_edges(
-    "response_agent",
-    after_response,
-    {"calculation_agent": "calculation_agent", END: END}
-)
-
-workflow.add_conditional_edges(
-    "calculation_agent",
-    lambda s: "transaction_agent" if re.search(r"contribute|deposit|transfer", s["user_input"], re.IGNORECASE) else END,
-    {"transaction_agent": "transaction_agent", END: END}
-)
-
-workflow.add_edge("transaction_agent", END)
+workflow.add_edge("response_agent", END)
 
 # Compile the graph
 app = workflow.compile()
@@ -705,14 +775,14 @@ png_graph = app.get_graph().draw_mermaid_png()
 with open("tfsa_graph.png", "wb") as f:
     f.write(png_graph)
 
-logger.info(f"Graph saved as 'tfsa_graph.png' in {os.getcwd()}")
+logging.info(f"Graph saved as 'tfsa_graph.png' in {os.getcwd()}")
 
 
 # ======================
 # 5. Execution Function
 # ======================
-def extract_user_id(input_str: str) -> tuple:
-    """Extracts user ID from input string and returns cleaned input"""
+def extract_user_id(input_str: str) -> str:
+    """Extracts user ID from input string"""
     # Look for patterns like "user ID is XYZ", "my ID is XYZ", etc.
     patterns = [
         r"my\s+user\s*id\s+is\s+(\w+)",
@@ -725,41 +795,106 @@ def extract_user_id(input_str: str) -> tuple:
         match = re.search(pattern, input_str, re.IGNORECASE)
         if match:
             user_id = match.group(1)
-            cleaned_input = input_str.replace(match.group(0), '').strip()
-            return user_id, cleaned_input
+            return user_id
 
-    return None, input_str
+    return None
 
 
-def run_tfsa_assistant_sync(user_input: str):
-    """Run the agent workflow"""
-    # Extract user ID from input
-    user_id, cleaned_input = extract_user_id(user_input)
+cache = Cache.instance("tfsa")
 
-    state = {
-        "user_input": cleaned_input,
-        "user_id": user_id,
-        "user_profile": None,
-        "search_results": None,
-        "contribution_room": None,
-        "contribution_amount": None,
-        "messages": []
-    }
 
-    # Execute workflow
-    logger.info(f"\n🔹 USER QUERY: '{user_input}'")
-    accumulated_state = state.copy()
-    for step in app.stream(state):
-        for node, value in step.items():
-            # Update accumulated state with node value
-            accumulated_state.update(value)
+def chat_tfsa_assistant(user_input: str, thread_id: Optional[str] = None) -> tuple[str, AgentState]:
+    """Run the TFSA LangGraph agent workflow and the answer"""
+    start_time = time.time()
+    try:
+        # Create initial state
+        state = {
+            "user_input": user_input,
+            "user_profile": None,
+            "search_results": None,
+            "contribution_room": None,
+            "contribution_amount": None,
+            "messages": []
+        }
 
-            # Print node output
-            if 'messages' in value and value['messages']:
-                msg = value["messages"][-1]
-                logger.info(f"🔹 [{node.upper()}]: {msg['content']}")
+        # Retrieve thread state if exists
+        if thread_id:
+            thread_cache_key = f"thread_state_{thread_id}"
+            if cache.contains(thread_cache_key):
+                state = cache.load_from_cache(thread_cache_key).get("value")
+                state["user_input"] = user_input
 
-    return accumulated_state
+        # Create unique cache id to avoid duplicate requests
+        cache_hash = hashlib.sha256(f"{user_input}".encode('UTF-8')).hexdigest()
+        if cache.contains(cache_hash):
+            cache_item = cache.load_from_cache(cache_hash)
+            assistant_response_text = cache_item.get("value", "")
+
+            return assistant_response_text, state
+
+        # Execute workflow
+        current_state = run_tfsa_assistant_sync(state)
+
+        # Save thread state
+        if thread_id:
+            thread_cache_key = f"thread_state_{thread_id}"
+            cache.cache(thread_cache_key, current_state)
+
+        # Extract last assistant message
+        assistant_msgs = [msg['content'] for msg in current_state['messages']
+                          if msg.get('role') == 'assistant']
+        if assistant_msgs:
+            assistant_response_text = f"{assistant_msgs[-1]}".strip()
+            if len(assistant_response_text) <= 0:
+                assistant_response_text = "No response generated"
+        else:
+            assistant_response_text = "No response generated"
+
+        return assistant_response_text, current_state
+    finally:
+        logging.info("chat_tfsa_assistant finished in %.3f seconds", time.time() - start_time)
+
+
+def run_tfsa_assistant_sync(state: AgentState) -> AgentState:
+    """Run the TFSA LangGraph agent workflow"""
+    start_time = time.time()
+    try:
+        user_input = state["user_input"]
+        # Extract user ID from input if not already set
+        if not state.get("user_id"):
+            user_id = extract_user_id(user_input)
+            if user_id:
+                state["user_id"] = user_id
+
+        # Initialize missing state fields
+        state.setdefault("user_profile", None)
+        state.setdefault("search_results", None)
+        state.setdefault("contribution_room", None)
+        state.setdefault("contribution_amount", None)
+        state.setdefault("messages", [])
+
+        # Add user message to history
+        state["messages"].append({
+            "role": "user",
+            "content": state["user_input"]
+        })
+
+        # Execute workflow
+        logging.info(f"\n🔹 USER QUERY: '{user_input}'")
+        accumulated_state = state.copy()
+        for step in app.stream(state):
+            for node, value in step.items():
+                # Update accumulated state with node value
+                accumulated_state.update(value)
+
+                # Print node output
+                if 'messages' in value and value['messages']:
+                    msg = value["messages"][-1]
+                    logging.info(f"🔹 [{node.upper()}]: {msg['content']}")
+
+        return accumulated_state
+    finally:
+        logging.info("run_tfsa_assistant_sync finished in %.3f seconds", time.time() - start_time)
 
 
 async def run_tfsa_assistant_stream(user_input: str) -> AsyncGenerator[str, None]:
@@ -767,143 +902,127 @@ async def run_tfsa_assistant_stream(user_input: str) -> AsyncGenerator[str, None
     Streaming wrapper that yields SSE text/event-stream fragments.
     Compatible with watsonx Orchestrate external-agent streaming spec.
     """
-    # Extract user ID from input
-    user_id, cleaned_input = extract_user_id(user_input)
+    start_time = time.time()
+    try:
+        # Extract user ID from input
+        user_id = extract_user_id(user_input)
 
-    # Build LangGraph input
-    state = {
-        "user_input": cleaned_input,
-        "user_id": user_id,
-        "user_profile": None,
-        "search_results": None,
-        "contribution_room": None,
-        "contribution_amount": None,
-        "messages": [],
-    }
+        # Build LangGraph input
+        state = {
+            "user_input": user_input,
+            "user_profile": None,
+            "search_results": None,
+            "contribution_room": None,
+            "contribution_amount": None,
+            "messages": [],
+        }
+        if user_id:
+            state["user_id"] = user_id
 
-    # LangGraph async stream
-    async for event in app.astream_events(state, version="v2"):
-        kind = event["event"]
-        if kind == "on_chat_model_stream":
-            chunk = event["data"]["chunk"].content or ""
-            if chunk:
-                yield f"data: {json.dumps({'choices': [{'delta': {'content': chunk}}]})}\n\n"
-        elif kind == "on_tool_start":
-            yield f"data: {json.dumps({'choices': [{'delta': {'role': 'assistant', 'tool_calls': [{'id': event['run_id'], 'function': {'name': event['name'], 'arguments': json.dumps(event['data'].get('input', {}))}}]}}]})}\n\n"
-        elif kind == "on_tool_end":
-            yield f"data: {json.dumps({'choices': [{'delta': {'role': 'tool', 'content': event['data'].get('output', '')}}]})}\n\n"
-    yield "data: [DONE]\n\n"
+        # LangGraph async stream
+        async for event in app.astream_events(state, version="v2"):
+            kind = event["event"]
+            if kind == "on_chat_model_stream":
+                chunk = event["data"]["chunk"].content or ""
+                if chunk:
+                    yield f"data: {json.dumps({'choices': [{'delta': {'content': chunk}}]})}\n\n"
+            elif kind == "on_tool_start":
+                yield f"data: {json.dumps({'choices': [{'delta': {'role': 'assistant', 'tool_calls': [{'id': event['run_id'], 'function': {'name': event['name'], 'arguments': json.dumps(event['data'].get('input', {}))}}]}}]})}\n\n"
+            elif kind == "on_tool_end":
+                yield f"data: {json.dumps({'choices': [{'delta': {'role': 'tool', 'content': event['data'].get('output', '')}}]})}\n\n"
+        yield "data: [DONE]\n\n"
+    finally:
+        logging.info("run_tfsa_assistant_stream finished in %.3f seconds", time.time() - start_time)
 
 
 # ======================
 # 6. Example Usage
 # ======================
 if __name__ == "__main__":
-    print("===== TFSA CONTRIBUTION ASSISTANT =====")
+    logging.info("===== TFSA CONTRIBUTION ASSISTANT =====")
 
     # Example 1: Policy question
-    print(
+    logging.info(
         "\n=== EXAMPLE 1: Policy Question ===\nWhat are the annual dollar limits for each year of TSFA, including 2025?")
-    state = run_tfsa_assistant_sync("What are the annual dollar limits for each year of TSFA, including 2025?")
-    if state.get("messages"):
-        # Find the final assistant message
-        assistant_msgs = [msg['content'] for msg in state.get("messages")
-                          if msg.get('role') == 'assistant']
-        response_text = assistant_msgs[-1] if assistant_msgs else "No response generated"
-        print(response_text)
-        # Sample answer:
-        # I believe you're asking about TFSA (Tax-Free Savings Account) contribution limits. Here are the annual TFSA contribution room limits for each year since the program began in Canada:
-        # TFSA Annual Contribution Limits:
-        #
-        # 2009-2012: $5,000 per year
-        # 2013-2014: $5,500 per year
-        # 2015: $10,000 (temporary increase)
-        # 2016-2018: $5,500 per year
-        # 2019-2022: $6,000 per year
-        # 2023: $6,500
-        # 2024: $7,000
-        # 2025: $7,000
-        #
-        # Total cumulative contribution room for someone who was eligible since 2009 and has never contributed would be $95,000 as of 2025.
-        # Important notes:
-        #
-        # These limits are indexed to inflation and rounded to the nearest $500
-        # Unused contribution room carries forward indefinitely
-        # You regain contribution room in January following any withdrawals made in the previous year
-        # You must be 18 or older and a Canadian resident to contribute
-        #
-        # The limits are set annually by the Canada Revenue Agency based on inflation adjustments to the original $5,000 base amount.
+    response_text, _ = chat_tfsa_assistant("What are the annual dollar limits for each year of TSFA, including 2025?")
+    logging.info(response_text)
+    # Sample answer:
+    # I believe you're asking about TFSA (Tax-Free Savings Account) contribution limits. Here are the annual TFSA contribution room limits for each year since the program began in Canada:
+    # TFSA Annual Contribution Limits:
+    #
+    # 2009-2012: $5,000 per year
+    # 2013-2014: $5,500 per year
+    # 2015: $10,000 (temporary increase)
+    # 2016-2018: $5,500 per year
+    # 2019-2022: $6,000 per year
+    # 2023: $6,500
+    # 2024: $7,000
+    # 2025: $7,000
+    #
+    # Total cumulative contribution room for someone who was eligible since 2009 and has never contributed would be $95,000 as of 2025.
+    # Important notes:
+    #
+    # These limits are indexed to inflation and rounded to the nearest $500
+    # Unused contribution room carries forward indefinitely
+    # You regain contribution room in January following any withdrawals made in the previous year
+    # You must be 18 or older and a Canadian resident to contribute
+    #
+    # The limits are set annually by the Canada Revenue Agency based on inflation adjustments to the original $5,000 base amount.
 
     # Example 2: Contribution intent
-    print("\n=== EXAMPLE 2: Contribution Intent ===\nI want to contribute to my TFSA")
-    state = run_tfsa_assistant_sync("I want to contribute to my TFSA")
-    # Display response
-    if state.get("messages"):
-        assistant_msgs = [msg['content'] for msg in state.get("messages")
-                          if msg.get('role') == 'assistant']
-        response_text = assistant_msgs[-1] if assistant_msgs else "No response generated"
-        print(response_text)
-        # Sample answer:
-        # I'd be happy to help you with information about TFSA contributions! To provide the most relevant guidance, could you tell me a bit more about your situation?
-        # For example:
-        #
-        # Do you already have a TFSA account set up, or would you need to open one first?
-        # Are you looking to make a one-time contribution or set up regular contributions?
-        # Do you know how much contribution room you currently have available?
-        #
-        # In the meantime, here are some key things to keep in mind:
-        # Before contributing:
-        #
-        # Make sure you don't exceed your available contribution room (this includes any unused room from previous years plus this year's limit)
-        # You can check your contribution room on your CRA My Account online, or call the CRA
-        #
-        # Ways to contribute:
-        #
-        # Online banking transfer to your TFSA
-        # In-person at your bank or financial institution
-        # Pre-authorized contributions (automatic transfers)
-        # By cheque or bank draft
-        #
-        # Investment options within TFSA:
-        #
-        # High-interest savings accounts
-        # GICs (Guaranteed Investment Certificates)
-        # Mutual funds, ETFs, stocks (if your TFSA allows investments)
-        #
-        # What specific aspect of contributing would you like to focus on?
+    logging.info("\n=== EXAMPLE 2: Contribution Intent ===\nI want to contribute to my TFSA")
+    response_text, _ = chat_tfsa_assistant("I want to contribute to my TFSA")
+    logging.info(response_text)
+    # Sample answer:
+    # I'd be happy to help you with information about TFSA contributions! To provide the most relevant guidance, could you tell me a bit more about your situation?
+    # For example:
+    #
+    # Do you already have a TFSA account set up, or would you need to open one first?
+    # Are you looking to make a one-time contribution or set up regular contributions?
+    # Do you know how much contribution room you currently have available?
+    #
+    # In the meantime, here are some key things to keep in mind:
+    # Before contributing:
+    #
+    # Make sure you don't exceed your available contribution room (this includes any unused room from previous years plus this year's limit)
+    # You can check your contribution room on your CRA My Account online, or call the CRA
+    #
+    # Ways to contribute:
+    #
+    # Online banking transfer to your TFSA
+    # In-person at your bank or financial institution
+    # Pre-authorized contributions (automatic transfers)
+    # By cheque or bank draft
+    #
+    # Investment options within TFSA:
+    #
+    # High-interest savings accounts
+    # GICs (Guaranteed Investment Certificates)
+    # Mutual funds, ETFs, stocks (if your TFSA allows investments)
+    #
+    # What specific aspect of contributing would you like to focus on?
 
     # Example 3: Contribution room check (with user ID)
-    print(
+    logging.info(
         "\n=== EXAMPLE 3: Contribution Room Check ===\nMy user ID is user_123. What is my contribution room for 2025?")
-    state = run_tfsa_assistant_sync("My user ID is user_123. What is my contribution room for 2025?")
+    response_text, state = chat_tfsa_assistant("My user ID is user_123. What is my contribution room for 2025?")
     # Display response
-    if state.get("messages"):
-        assistant_msgs = [msg['content'] for msg in state.get("messages")
-                          if msg.get('role') == 'assistant']
-        response_text = assistant_msgs[-1] if assistant_msgs else "No response generated"
-        print(response_text)
-        # Sample answer:
-        # Based on the information I found, your current TFSA contribution room for 2025 is $14,500.
-        # This means you can contribute up to $14,500 to your TFSA this year without exceeding your limit. This amount includes:
-        #
-        # Any unused contribution room carried forward from previous years
-        # The 2025 annual limit of $7,000
-        # Any withdrawals you made in previous years that have been added back to your room
-        #
-        # Would you like to proceed with making a contribution? I can help you with the next steps if you'd like to contribute some or all of this available room.
+    logging.info(response_text)
+    # Sample answer:
+    # Based on the information I found, your current TFSA contribution room for 2025 is $14,500.
+    # This means you can contribute up to $14,500 to your TFSA this year without exceeding your limit. This amount includes:
+    #
+    # Any unused contribution room carried forward from previous years
+    # The 2025 annual limit of $7,000
+    # Any withdrawals you made in previous years that have been added back to your room
+    #
+    # Would you like to proceed with making a contribution? I can help you with the next steps if you'd like to contribute some or all of this available room.
 
     # Example 4: Contribution execution
     if state.get("contribution_room") is not None:
         amount = input(f"\nHow much would you like to contribute? (Room: ${state['contribution_room']:.2f}): ")
         user_input = f"My user ID is user_123. Contribute ${amount}"
-        print(f"\n=== EXAMPLE 4: Contribution Execution ===\n{user_input}")
-        state = run_tfsa_assistant_sync(user_input)
-
-        # Display final transaction result
-        if state.get("messages") is not None:
-            print("\n💎 FINAL RESULT:")
-            # Print all assistant messages as they form the complete response
-            assistant_msgs = [msg['content'] for msg in state.get("messages")
-                              if msg.get('role') == 'assistant']
-            response_text = assistant_msgs[-1] if assistant_msgs else "No response generated"
-            print(response_text)
+        logging.info(f"\n=== EXAMPLE 4: Contribution Execution ===\n{user_input}")
+        response_text, _ = chat_tfsa_assistant(user_input)
+        logging.info("\n💎 FINAL RESULT:")
+        logging.info(response_text)
