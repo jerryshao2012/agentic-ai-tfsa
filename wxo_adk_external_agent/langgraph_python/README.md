@@ -177,4 +177,10 @@ Yes, I want to contribute $2000
     - Click right side button named **View all**
    ![Build agents and tools->View all](./build_agents_and_tools_view_all.png "Example of View all from IBM watsonx Orchestrate")
     - Click **Connect to TFSA External Agent**
-   ![Connect to TFSA External Agent->Trace Detail](./connect_to_tfsa_external agent_trace_detail.png "Example of Trace Detail from IBM watsonx Orchestrate")
+   ![Connect to TFSA External Agent->Trace Detail](./connect_to_tfsa_external_agent_trace_detail.png "Example of Trace Detail from IBM watsonx Orchestrate")
+
+3. Enhaced agentic communication cache and logs
+    - To check agent access request logs from watsonx Orchestrate: https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/logs
+   ![Access Logs](./chat_langgraph_access_log.png "Access Logs")
+    - To manage agentic communication cache: https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/cache
+   ![Manage Cache](./chat_langgraph_manage_cache.png "Manage Cache")

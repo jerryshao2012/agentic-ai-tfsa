@@ -68,6 +68,9 @@ async def chat_completions(
     thread_state = None
     if thread_cache_key and cache.contains(thread_cache_key):
         thread_state = cache.load_from_cache(thread_cache_key).get("value")
+        # Get user ID from thread state
+        if "user_id" in thread_state:
+            user_id = thread_state["user_id"]
 
     # Log access start
     log_access(user_id, thread_id, is_stream, user_input, "[Generating...]", model)
