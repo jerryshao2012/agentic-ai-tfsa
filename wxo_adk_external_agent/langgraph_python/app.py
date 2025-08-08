@@ -191,8 +191,14 @@ async def chat_completions(
         # Create a wrapper to capture the streamed content and log after completion
         accumulated_response = ""
 
-        async def logging_wrapper(stream_gen):
+        # Capture variables for closure
+        async def logging_wrapper(stream_gen,
+                                  _thread_cache_key=thread_cache_key,
+                                  _thread_state=thread_state,
+                                  _user_id=user_id,
+                                  _user_input=user_input):
             nonlocal accumulated_response
+            success = False
             try:
                 async for chunk in stream_gen:
                     # Accumulate content chunks
@@ -206,12 +212,38 @@ async def chat_completions(
                         except json.JSONDecodeError:
                             pass
                     yield chunk
+                success = True
+            except Exception as e:
+                logger.error(f"Streaming error: {str(e)}")
+                raise
             finally:
                 # Log access after the stream completes
                 logger.info(f"Logging access for streamed response (len={len(accumulated_response)})")
-                log_access(user_id, thread_id, is_stream, user_input,
+                log_access(_user_id, thread_id, is_stream, _user_input,
                            response=f"[{(time.time() - start_time):.3f} seconds]\n{accumulated_response}",
                            model=model)
+
+                # Update thread state after successful stream
+                if success and accumulated_response and _thread_cache_key:
+                    # Create new thread state if none exists
+                    if _thread_state is None:
+                        _thread_state = {
+                            "user_id": _user_id,
+                            "messages": []
+                        }
+
+                    # Append new messages
+                    _thread_state["messages"].append({
+                        "role": "user",
+                        "content": _user_input
+                    })
+                    _thread_state["messages"].append({
+                        "role": "assistant",
+                        "content": accumulated_response
+                    })
+
+                    # Save updated state to cache
+                    cache.cache(_thread_cache_key, _thread_state)
 
         # Get the LLM stream generator
         stream_generator = get_llm_stream(request.messages, model, thread_id, selected_tools)
@@ -238,6 +270,28 @@ async def chat_completions(
                 )
             ]
         )
+
+        # Update thread state if exists
+        if thread_cache_key:
+            # Create new thread state if none exists
+            if thread_state is None:
+                thread_state = {
+                    "user_id": user_id,
+                    "messages": []
+                }
+
+            # Append new messages
+            thread_state["messages"].append({
+                "role": "user",
+                "content": user_input
+            })
+            thread_state["messages"].append({
+                "role": "assistant",
+                "content": last_message
+            })
+
+            # Save updated state to cache
+            cache.cache(thread_cache_key, thread_state)
 
         # Log access
         log_access(user_id, thread_id, is_stream, user_input,
