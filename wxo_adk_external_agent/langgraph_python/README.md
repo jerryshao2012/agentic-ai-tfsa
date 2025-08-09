@@ -197,3 +197,6 @@ Yes, I want to contribute $2000
    ![Access Logs](screenshots/chat_langgraph_access_log.png "Access Logs")
     - To manage agentic communication cache: https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/cache
    ![Manage Cache](screenshots/chat_langgraph_manage_cache.png "Manage Cache")
+
+Note:
+- One issue we are facing in the testing that the external agent calling may take a long time to respond. The configuraion of the external agent call can not be defined in the agent.yaml file. In this sample, we use a self-expired `cache` to cache the external agent call result. This is a workaround to avoid the long waiting time. In production, we should use a persistent distributed `cache` to go around it. ALso only the policy type user inqueries are cached. 
