@@ -21,7 +21,11 @@ The API is designed to be used with IBM watsonx Orchestrate, but can be used ind
 - **Token Management**: Implements a caching mechanism for IBM Cloud IAM tokens to optimize authentication processes.
 - **Logging and Debugging**: Logging is set up to facilitate debugging and monitoring of the application.
 
-Note: in `app.py` that defines the `FastAPI` app object, `selected_tools = [chat_tfsa_assistant]` in the `chat_completions` function to enable the tool. Please make sure to update this line to match your tool configuration. the function `chat_completions`. You can choose any Python function for the tool.
+Note:
+- In `app.py` that defines the `FastAPI` app object, `selected_tools = [chat_tfsa_assistant]` in the `chat_completions` function to enable the tool. Please make sure to update this line to match your tool configuration. the function `chat_completions`. You can choose any Python function for the tool.
+- Multiple tools can be added to the `chat_completions` function through `selected_tools`. It relays on calling `create_react_agent` to create an agent graph that calls tools in a loop until a stopping condition is met. This is a simple workflow that treat tools as conections. In the real complex business senarios, you may want to use a more sophisticated workflow.
+- `app.py` defines a `chat_completions` function that takes a `request` object as input and returns a `response` object.
+- We optimize tools calling to optimize performance: if there were one tool in the selected list `selected_tools`, we can directly call the tool to get the result. In testing, it will save 8 to 10 seconds for each tool call.
 
 ## Security Limitations
 
