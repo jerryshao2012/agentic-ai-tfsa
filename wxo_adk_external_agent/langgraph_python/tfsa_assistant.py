@@ -9,9 +9,9 @@ import re
 import time
 from typing import AsyncGenerator, TypedDict, Annotated, Optional
 
-from dotenv import load_dotenv
 from langchain.tools import tool
 from langgraph.graph import StateGraph, END
+from langgraph.graph.state import CompiledStateGraph
 
 import config
 from cache import Cache
@@ -30,8 +30,6 @@ logging.basicConfig(
 # TODO: Contribution optimization advisor
 # TODO: Multi-year projection tool
 # TODO: Integrated tax impact analysis
-
-load_dotenv('.env')
 
 if 'ollama' in config.AI_SERVICES_PROVIDER:
     # Configuration for Ollama. Initialize Ollama with qwen2.5vl:7b model locally
@@ -683,99 +681,99 @@ def response_agent(state: AgentState):
 # ======================
 # 4. Graph Construction
 # ======================
-workflow = StateGraph(AgentState)
+def create_workflow() -> CompiledStateGraph:
+    workflow = StateGraph(AgentState)
 
-# Define nodes
-workflow.add_node("profile_agent", profile_agent)
-workflow.add_node("document_agent", document_agent)
-workflow.add_node("search_agent", search_agent)
-workflow.add_node("calculation_agent", calculation_agent)
-workflow.add_node("transaction_agent", transaction_agent)
-workflow.add_node("response_agent", response_agent)  # New response agent
+    # Define nodes
+    workflow.add_node("profile_agent", profile_agent)
+    workflow.add_node("document_agent", document_agent)
+    workflow.add_node("search_agent", search_agent)
+    workflow.add_node("calculation_agent", calculation_agent)
+    workflow.add_node("transaction_agent", transaction_agent)
+    workflow.add_node("response_agent", response_agent)  # New response agent
 
-# Define edges
-workflow.set_entry_point("profile_agent")
+    # Define edges
+    workflow.set_entry_point("profile_agent")
+
+    # Conditional edges
+    def route_after_profile(state: AgentState):
+        """Decide next step after profile_agent"""
+        user_input = state["user_input"].lower()
+        # Handle calculation requests (contribution room)
+        if (re.search(r"contribution room|how much can i contribute|room available|limit available", user_input) or
+                "how much" in user_input and ("contribute" in user_input or "room" in user_input)):
+            return "calculation_agent"
+
+        # Handle transaction requests
+        if re.search(r"contribute|deposit|add|transfer|invest", user_input):
+            return "calculation_agent"  # Need room calculation first
+
+        return "document_agent"  # Go to response agent after document
+
+    workflow.add_conditional_edges(
+        "profile_agent",
+        route_after_profile,
+        {
+            "document_agent": "document_agent",
+            "calculation_agent": "calculation_agent"
+        }
+    )
+
+    # Add edge from calculation_agent to transaction_agent when needed (lines 389-392)
+    def route_after_calculation(state: AgentState):
+        """Decide next step after calculation"""
+        user_input = state["user_input"].lower()
+
+        # Handle transaction requests
+        transaction_keywords = r"contribute|deposit|add|transfer|invest|yes, i want"
+        if (re.search(transaction_keywords, user_input) or
+                any(word in user_input for word in ["proceed", "execute", "do it"])):
+            return "transaction_agent"
+        return END
+
+    workflow.add_conditional_edges(
+        "calculation_agent",
+        route_after_calculation,
+        {
+            "transaction_agent": "transaction_agent",
+            END: END
+        }
+    )
+
+    def route_after_document(state: AgentState):
+        """Decide next step after document_agent"""
+        # Always search if needed
+        if any(msg.get("needs_search", False) for msg in state["messages"]):
+            return "search_agent"
+
+        return "response_agent"  # Go to response agent after document
+
+    workflow.add_conditional_edges(
+        "document_agent",
+        route_after_document,
+        {
+            "search_agent": "search_agent",
+            "response_agent": "response_agent"
+        }
+    )
+
+    workflow.add_edge("search_agent", "response_agent")  # Search goes to response
+
+    workflow.add_edge("response_agent", END)
+
+    # Compile the graph
+    compiled_state_graph = workflow.compile()
+
+    png_graph = compiled_state_graph.get_graph().draw_mermaid_png()
+    with open("tfsa_graph.png", "wb") as f:
+        f.write(png_graph)
+
+    logging.info(f"Graph saved as 'tfsa_graph.png' in {os.getcwd()}")
+
+    return compiled_state_graph
 
 
-# Conditional edges
-def route_after_profile(state: AgentState):
-    """Decide next step after profile_agent"""
-    user_input = state["user_input"].lower()
-    # Handle calculation requests (contribution room)
-    if (re.search(r"contribution room|how much can i contribute|room available|limit available", user_input) or
-            "how much" in user_input and ("contribute" in user_input or "room" in user_input)):
-        return "calculation_agent"
-
-    # Handle transaction requests
-    if re.search(r"contribute|deposit|add|transfer|invest", user_input):
-        return "calculation_agent"  # Need room calculation first
-
-    return "document_agent"  # Go to response agent after document
-
-
-workflow.add_conditional_edges(
-    "profile_agent",
-    route_after_profile,
-    {
-        "document_agent": "document_agent",
-        "calculation_agent": "calculation_agent"
-    }
-)
-
-
-# Add edge from calculation_agent to transaction_agent when needed (lines 389-392)
-def route_after_calculation(state: AgentState):
-    """Decide next step after calculation"""
-    user_input = state["user_input"].lower()
-
-    # Handle transaction requests
-    transaction_keywords = r"contribute|deposit|add|transfer|invest|yes, i want"
-    if (re.search(transaction_keywords, user_input) or
-            any(word in user_input for word in ["proceed", "execute", "do it"])):
-        return "transaction_agent"
-    return END
-
-
-workflow.add_conditional_edges(
-    "calculation_agent",
-    route_after_calculation,
-    {
-        "transaction_agent": "transaction_agent",
-        END: END
-    }
-)
-
-
-def route_after_document(state: AgentState):
-    """Decide next step after document_agent"""
-    # Always search if needed
-    if any(msg.get("needs_search", False) for msg in state["messages"]):
-        return "search_agent"
-
-    return "response_agent"  # Go to response agent after document
-
-
-workflow.add_conditional_edges(
-    "document_agent",
-    route_after_document,
-    {
-        "search_agent": "search_agent",
-        "response_agent": "response_agent"
-    }
-)
-
-workflow.add_edge("search_agent", "response_agent")  # Search goes to response
-
-workflow.add_edge("response_agent", END)
-
-# Compile the graph
-app = workflow.compile()
-
-png_graph = app.get_graph().draw_mermaid_png()
-with open("tfsa_graph.png", "wb") as f:
-    f.write(png_graph)
-
-logging.info(f"Graph saved as 'tfsa_graph.png' in {os.getcwd()}")
+graph_app = create_workflow()
 
 
 # ======================
@@ -882,7 +880,7 @@ def run_tfsa_assistant_sync(state: AgentState) -> AgentState:
         # Execute workflow
         logging.info(f"\n🔹 USER QUERY: '{user_input}'")
         accumulated_state = state.copy()
-        for step in app.stream(state):
+        for step in graph_app.stream(state):
             for node, value in step.items():
                 # Update accumulated state with node value
                 accumulated_state.update(value)
@@ -920,7 +918,7 @@ async def run_tfsa_assistant_stream(user_input: str) -> AsyncGenerator[str, None
             state["user_id"] = user_id
 
         # LangGraph async stream
-        async for event in app.astream_events(state, version="v2"):
+        async for event in graph_app.astream_events(state, version="v2"):
             kind = event["event"]
             if kind == "on_chat_model_stream":
                 chunk = event["data"]["chunk"].content or ""
@@ -933,96 +931,3 @@ async def run_tfsa_assistant_stream(user_input: str) -> AsyncGenerator[str, None
         yield "data: [DONE]\n\n"
     finally:
         logging.info("run_tfsa_assistant_stream finished in %.3f seconds", time.time() - start_time)
-
-
-# ======================
-# 6. Example Usage
-# ======================
-if __name__ == "__main__":
-    logging.info("===== TFSA CONTRIBUTION ASSISTANT =====")
-
-    # Example 1: Policy question
-    logging.info(
-        "\n=== EXAMPLE 1: Policy Question ===\nWhat are the annual dollar limits for each year of TSFA, including 2025?")
-    response_text, _ = chat_tfsa_assistant("What are the annual dollar limits for each year of TSFA, including 2025?")
-    logging.info(response_text)
-    # Sample answer:
-    # I believe you're asking about TFSA (Tax-Free Savings Account) contribution limits. Here are the annual TFSA contribution room limits for each year since the program began in Canada:
-    # TFSA Annual Contribution Limits:
-    #
-    # 2009-2012: $5,000 per year
-    # 2013-2014: $5,500 per year
-    # 2015: $10,000 (temporary increase)
-    # 2016-2018: $5,500 per year
-    # 2019-2022: $6,000 per year
-    # 2023: $6,500
-    # 2024: $7,000
-    # 2025: $7,000
-    #
-    # Total cumulative contribution room for someone who was eligible since 2009 and has never contributed would be $95,000 as of 2025.
-    # Important notes:
-    #
-    # These limits are indexed to inflation and rounded to the nearest $500
-    # Unused contribution room carries forward indefinitely
-    # You regain contribution room in January following any withdrawals made in the previous year
-    # You must be 18 or older and a Canadian resident to contribute
-    #
-    # The limits are set annually by the Canada Revenue Agency based on inflation adjustments to the original $5,000 base amount.
-
-    # Example 2: Contribution intent
-    logging.info("\n=== EXAMPLE 2: Contribution Intent ===\nI want to contribute to my TFSA")
-    response_text, _ = chat_tfsa_assistant("I want to contribute to my TFSA")
-    logging.info(response_text)
-    # Sample answer:
-    # I'd be happy to help you with information about TFSA contributions! To provide the most relevant guidance, could you tell me a bit more about your situation?
-    # For example:
-    #
-    # Do you already have a TFSA account set up, or would you need to open one first?
-    # Are you looking to make a one-time contribution or set up regular contributions?
-    # Do you know how much contribution room you currently have available?
-    #
-    # In the meantime, here are some key things to keep in mind:
-    # Before contributing:
-    #
-    # Make sure you don't exceed your available contribution room (this includes any unused room from previous years plus this year's limit)
-    # You can check your contribution room on your CRA My Account online, or call the CRA
-    #
-    # Ways to contribute:
-    #
-    # Online banking transfer to your TFSA
-    # In-person at your bank or financial institution
-    # Pre-authorized contributions (automatic transfers)
-    # By cheque or bank draft
-    #
-    # Investment options within TFSA:
-    #
-    # High-interest savings accounts
-    # GICs (Guaranteed Investment Certificates)
-    # Mutual funds, ETFs, stocks (if your TFSA allows investments)
-    #
-    # What specific aspect of contributing would you like to focus on?
-
-    # Example 3: Contribution room check (with user ID)
-    logging.info(
-        "\n=== EXAMPLE 3: Contribution Room Check ===\nMy user ID is user_123. What is my contribution room for 2025?")
-    response_text, state = chat_tfsa_assistant("My user ID is user_123. What is my contribution room for 2025?")
-    # Display response
-    logging.info(response_text)
-    # Sample answer:
-    # Based on the information I found, your current TFSA contribution room for 2025 is $14,500.
-    # This means you can contribute up to $14,500 to your TFSA this year without exceeding your limit. This amount includes:
-    #
-    # Any unused contribution room carried forward from previous years
-    # The 2025 annual limit of $7,000
-    # Any withdrawals you made in previous years that have been added back to your room
-    #
-    # Would you like to proceed with making a contribution? I can help you with the next steps if you'd like to contribute some or all of this available room.
-
-    # Example 4: Contribution execution
-    if state.get("contribution_room") is not None:
-        amount = input(f"\nHow much would you like to contribute? (Room: ${state['contribution_room']:.2f}): ")
-        user_input = f"My user ID is user_123. Contribute ${amount}"
-        logging.info(f"\n=== EXAMPLE 4: Contribution Execution ===\n{user_input}")
-        response_text, _ = chat_tfsa_assistant(user_input)
-        logging.info("\n💎 FINAL RESULT:")
-        logging.info(response_text)

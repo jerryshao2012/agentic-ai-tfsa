@@ -12,7 +12,7 @@ logger.setLevel(logging.INFO)
 
 def get_access_token(watsonx_api_key):
     api_key = watsonx_api_key
-    file_path = './current_token.txt'
+    file_path = 'log/current_token.txt'
     url = "https://iam.cloud.ibm.com/identity/token"
     headers = {'content-type': 'application/x-www-form-urlencoded',
                'accept': 'application/json'}
