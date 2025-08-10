@@ -157,7 +157,9 @@ Update `api_url` as needed in `tfsa_langgraph_external_agent.yaml`.
 orchestrate agents import -f tfsa_langgraph_external_agent.yaml
 ```
 
-2. Import agents
+2. Import agents 
+
+This native agent is used to route the question to the external agent. Only native agents can be listed in watsonx Orchestrate chat UI aoo. 
 ```shell
 orchestrate agents import -f connection_with_tfsa_external_agent.yaml
 ```
@@ -185,7 +187,7 @@ My user ID is user_123. What is my contribution room for 2025?
 Yes, I want to contribute $2000
 ```
 
-2. To check agent communication logs
+2. To check agents' communication logs
     - From Chat UI, select **Manage agents**
     - Click right side button named **View all**
    ![Build agents and tools->View all](screenshots/build_agents_and_tools_view_all.png "Example of View all from IBM watsonx Orchestrate")
@@ -199,4 +201,5 @@ Yes, I want to contribute $2000
    ![Manage Cache](screenshots/chat_langgraph_manage_cache.png "Manage Cache")
 
 Note:
-- One issue we are facing in the testing that the external agent calling may take a long time to respond. The configuraion of the external agent call can not be defined in the agent.yaml file. In this sample, we use a self-expired `cache` to cache the external agent call result. This is a workaround to avoid the long waiting time. In production, we should use a persistent distributed `cache` to go around it. ALso only the policy type user inqueries are cached. 
+- One issue we are facing in the testing that the external agent calling may take a long time to respond. The configuraion of the external agent call can not be defined in the agent.yaml file. In this sample, we use a self-expired `cache` to cache the external agent call response. This is a workaround to avoid the long waiting time. In production, we should use a persistent distributed `cache` to go around it. ALso only the TFSA policy type user inqueries are cached.
+- The chat API call is stateless. To maintain the state, we use a cache with `thread_id` to store the conversation history within session.

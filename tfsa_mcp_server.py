@@ -5,7 +5,7 @@ from typing import Dict, Annotated
 # Initialize FastMCP with API metadata
 from mcp.server.fastmcp import FastMCP
 
-from tfsa_assistant import run_tfsa_assistant
+from tfsa_assistant import run_tfsa_assistant_sync
 
 # Initialize FastMCP with API metadata
 mcp = FastMCP(
@@ -30,7 +30,7 @@ def check_contribution_room(user_id: Annotated[str, "bank user ID"]) -> Dict:
     """Check user's available TFSA contribution room"""
     print(f"[{datetime.now().isoformat()}] Tool called: check_contribution_room with parameters: user_id='{user_id}'")
     try:
-        result = run_tfsa_assistant("What's my contribution room?", user_id)
+        result = run_tfsa_assistant_sync(f"My user ID is {user_id}. What's my contribution room?")
         return {
             "contribution_room": result.get("contribution_room"),
             "user_id": user_id,
@@ -51,7 +51,7 @@ def execute_contribution(user_input: Annotated[str, "User input contains a contr
     print(
         f"[{datetime.now().isoformat()}] Tool called: execute_contribution with parameters: user_input='{user_input}', user_id='{user_id}'")
     try:
-        result = run_tfsa_assistant(user_input, user_id)
+        result = run_tfsa_assistant_sync(f"My user ID is {user_id}. {user_input}")
 
         # Extract transaction ID from response
         transaction_id = None
@@ -126,7 +126,7 @@ def get_tfsa_advice(user_input: str, user_id: str = "user_123") -> Dict:
         f"[{datetime.now().isoformat()}] Resource called: get_tfsa_advice with parameters: user_input='{user_input}', user_id='{user_id}'")
     try:
         # Execute workflow
-        result = run_tfsa_assistant(user_input, user_id)
+        result = run_tfsa_assistant_sync(f"My user ID is {user_id}. {user_input}")
 
         # Extract final assistant response
         response = next(
