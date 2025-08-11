@@ -9,6 +9,7 @@ import re
 import time
 from typing import AsyncGenerator, TypedDict, Annotated, Optional
 
+import mlflow
 from langchain.tools import tool
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
@@ -896,6 +897,26 @@ def run_tfsa_assistant_sync(state: AgentState) -> AgentState:
                 if 'messages' in value and value['messages']:
                     msg = value["messages"][-1]
                     logging.info(f"🔹 [{node.upper()}]: {msg['content']}")
+
+        # Get the trace object just created
+        last_trace_id = mlflow.get_last_active_trace_id()
+        trace = mlflow.get_trace(trace_id=last_trace_id)
+
+        # Print the token usage
+        total_usage = trace.info.token_usage
+        logging.info("== Total token usage: ==")
+        logging.info(f"  Input tokens: {total_usage['input_tokens']}")
+        logging.info(f"  Output tokens: {total_usage['output_tokens']}")
+        logging.info(f"  Total tokens: {total_usage['total_tokens']}")
+
+        # Print the token usage for each LLM call
+        logging.info("\n== Token usage for each LLM call: ==")
+        for span in trace.data.spans:
+            if usage := span.get_attribute("mlflow.chat.tokenUsage"):
+                logging.info(f"{span.name}:")
+                logging.info(f"  Input tokens: {usage['input_tokens']}")
+                logging.info(f"  Output tokens: {usage['output_tokens']}")
+                logging.info(f"  Total tokens: {usage['total_tokens']}")
 
         return accumulated_state
     finally:
