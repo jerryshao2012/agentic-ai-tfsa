@@ -13,9 +13,9 @@ from langchain.tools import tool
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
 
-from wxo_adk_external_agent.langgraph_python import config
-from wxo_adk_external_agent.langgraph_python.cache import Cache
-from wxo_adk_external_agent.langgraph_python.models import ModelName
+import config
+from cache import Cache
+from models import ModelName
 
 logging.basicConfig(
     level=logging.INFO,

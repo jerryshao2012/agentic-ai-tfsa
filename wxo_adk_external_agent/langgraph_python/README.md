@@ -11,7 +11,7 @@ For official watsonx Orchestrate Agent Development Kit (ADK) documentation, refe
 This TFSA implementation demonstrates how to deploy an external agent as a serverless application in IBM Cloud. The application leverages 
 [FastAPI](https://fastapi.tiangolo.com) and [LangGraph](https://www.langchain.com/langgraph) to create a chat completion service that integrates with Ollama, Deepseek, IBM watsonx and OpenAI models. It also includes AI tool for TFSA policy search using [Tavily API](https://www.tavily.com).
 
-The API is designed to be used with IBM watsonx Orchestrate, but can be used independently as well. It must follow the [OpenAI-compatible OpenAPI specification](../spec.yaml). Endpoints **honour `X-IBM-THREAD-ID`** for multi-turn conversations, **stream via SSE** when `stream=true`. Both stream and non-stream must be implemented.
+The API is designed to be used with IBM watsonx Orchestrate, but can be used independently as well. It must have an [OpenAI-compatible API endpoint](https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/docs/). Endpoints **honour `X-IBM-THREAD-ID`** for multi-turn conversations, **stream via SSE** when `stream=true`. Both stream and non-stream must be implemented.
 
 ## Features
 
