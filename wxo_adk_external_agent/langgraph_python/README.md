@@ -147,6 +147,8 @@ It is recommended to implement your own authentication security measures to ensu
         python tfsa_assistant_mlflow_test.py
        ```
        ![mlflow LangGraph Tracingl](screenshots/mlflow_langgraph_tracing.png "Example of mlflow Langgraph Tracing")
+   - TFSA Chat APIs are integrated with MLflow, which can be viewed in the MLflow UI. We update Dockerfile to expose the MLflow UI.
+     - Here is the URL for access:https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/
      
 ### Step 2: Deploy tools linked with the External Agent
 
