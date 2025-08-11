@@ -191,7 +191,7 @@ async def chat_completions(
                     yield f"data: {json.dumps(struct)}\n\n"
 
                     # Add small delay to simulate streaming
-                    time.sleep(random.uniform(0.01, 0.05))
+                    time.sleep(random.uniform(0.05, 0.1))
 
                 # Send final stop message
                 stop_struct = {

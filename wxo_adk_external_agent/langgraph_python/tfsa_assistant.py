@@ -690,15 +690,16 @@ def create_workflow() -> CompiledStateGraph:
     workflow.add_node("search_agent", search_agent)
     workflow.add_node("calculation_agent", calculation_agent)
     workflow.add_node("transaction_agent", transaction_agent)
-    workflow.add_node("response_agent", response_agent)  # New response agent
+    workflow.add_node("response_agent", response_agent)
 
     # Define edges
     workflow.set_entry_point("profile_agent")
 
-    # Conditional edges
+    # Conditional edge after profile agent
     def route_after_profile(state: AgentState):
         """Decide next step after profile_agent"""
         user_input = state["user_input"].lower()
+
         # Handle calculation requests (contribution room)
         if (re.search(r"contribution room|how much can i contribute|room available|limit available", user_input) or
                 "how much" in user_input and ("contribute" in user_input or "room" in user_input)):
@@ -708,7 +709,7 @@ def create_workflow() -> CompiledStateGraph:
         if re.search(r"contribute|deposit|add|transfer|invest", user_input):
             return "calculation_agent"  # Need room calculation first
 
-        return "document_agent"  # Go to response agent after document
+        return "document_agent"
 
     workflow.add_conditional_edges(
         "profile_agent",
@@ -719,7 +720,7 @@ def create_workflow() -> CompiledStateGraph:
         }
     )
 
-    # Add edge from calculation_agent to transaction_agent when needed (lines 389-392)
+    # Conditional edge after calculation agent
     def route_after_calculation(state: AgentState):
         """Decide next step after calculation"""
         user_input = state["user_input"].lower()
@@ -729,6 +730,7 @@ def create_workflow() -> CompiledStateGraph:
         if (re.search(transaction_keywords, user_input) or
                 any(word in user_input for word in ["proceed", "execute", "do it"])):
             return "transaction_agent"
+        # For simple queries like "what is my room?", end after calculation.
         return END
 
     workflow.add_conditional_edges(
@@ -740,13 +742,14 @@ def create_workflow() -> CompiledStateGraph:
         }
     )
 
+    # Conditional edge after document agent
     def route_after_document(state: AgentState):
         """Decide next step after document_agent"""
         # Always search if needed
         if any(msg.get("needs_search", False) for msg in state["messages"]):
             return "search_agent"
 
-        return "response_agent"  # Go to response agent after document
+        return "response_agent"
 
     workflow.add_conditional_edges(
         "document_agent",
@@ -757,18 +760,22 @@ def create_workflow() -> CompiledStateGraph:
         }
     )
 
-    workflow.add_edge("search_agent", "response_agent")  # Search goes to response
-
+    # Define terminal edges for the graph
+    workflow.add_edge("calculation_agent", END)
+    workflow.add_edge("transaction_agent", END)
+    workflow.add_edge("search_agent", "response_agent")
     workflow.add_edge("response_agent", END)
 
     # Compile the graph
     compiled_state_graph = workflow.compile()
 
-    png_graph = compiled_state_graph.get_graph().draw_mermaid_png()
-    with open("tfsa_graph.png", "wb") as f:
-        f.write(png_graph)
-
-    logging.info(f"Graph saved as 'tfsa_graph.png' in {os.getcwd()}")
+    try:
+        png_graph = compiled_state_graph.get_graph().draw_mermaid_png()
+        with open("tfsa_graph.png", "wb") as f:
+            f.write(png_graph)
+        logging.info(f"Graph saved as 'tfsa_graph.png' in {os.getcwd()}")
+    except Exception as e:
+        logging.warning(f"Could not draw graph: {e}. Please install graphviz and its dependencies.")
 
     return compiled_state_graph
 
