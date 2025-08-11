@@ -28,9 +28,9 @@ llm = ChatOllama(
 # from ibm_watson_machine_learning.foundation_models import Model
 # from ibm_watson_machine_learning.metanames import GenTextParamsMetaNames as GenParams
 #
-# IBM_CLOUD_URL = os.getenv("IBM_CLOUD_URL")
-# WATSONX_API_KEY = os.getenv("API_KEY")
-# WATSONX_PROJECT_ID = os.getenv("PROJECT_ID")
+# IBM_CLOUD_URL = os.getenv("WATSONX_URL")
+# WATSONX_API_KEY = os.getenv("WATSONX_API_KEY")
+# WATSONX_PROJECT_ID = os.getenv("WATSONX_PROJECT_ID")
 #
 # # Initialize Watsonx model
 # watsonx_params = {
