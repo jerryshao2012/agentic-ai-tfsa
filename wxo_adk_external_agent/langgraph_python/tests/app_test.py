@@ -32,7 +32,7 @@ if __name__ == '__main__':
     headers = {"X-IBM-THREAD-ID": "test_thread_123"}
 
     logger.info("Sending test request 1...")
-    response = client.post("/chat/completions", json=test_request, headers=headers)
+    response = client.post("/api/v1/chat/completions", json=test_request, headers=headers)
     logger.info(f"Response status: {response.status_code}")
 
     if response.status_code == 200:
@@ -47,7 +47,7 @@ if __name__ == '__main__':
     test_request["stream"] = True
     logger.info("Sending test request 2 (streaming)...")
 
-    with client.stream("POST", "/chat/completions", json=test_request, headers=headers) as response:
+    with client.stream("POST", "/api/v1/chat/completions", json=test_request, headers=headers) as response:
         logger.info(f"Streaming response status: {response.status_code}")
         if response.status_code == 200:
             logger.info("Receiving stream...")
@@ -62,7 +62,7 @@ if __name__ == '__main__':
     test_request["extra_body"] = {"thread_id": "extra_body_thread_456"}
     test_request["stream"] = False
     logger.info("Sending test request 3 (with extra_body)...")
-    response = client.post("/chat/completions", json=test_request, headers=headers)
+    response = client.post("/api/v1/chat/completions", json=test_request, headers=headers)
     if response.status_code == 200:
         logger.info("Test 3 successful!")
     else:

@@ -100,7 +100,7 @@ It is recommended to implement your own authentication security measures to ensu
            - Sync test
            ```shell
             curl -X 'POST' \
-              'https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/chat/completions' \
+              'https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/api/v1/chat/completions' \
               -H 'accept: application/json' \
               -H 'Authorization: Bearer xxx' \
               -H 'Content-Type: application/json' \
@@ -118,7 +118,7 @@ It is recommended to implement your own authentication security measures to ensu
            - Streaming test
            ```shell
              curl -X 'POST' \
-              'https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/chat/completions' \
+              'https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/api/v1/chat/completions' \
               -H 'accept: application/json' \
               -H 'Authorization: Bearer xxx' \
               -H 'Content-Type: application/json' \
@@ -152,8 +152,9 @@ It is recommended to implement your own authentication security measures to ensu
 
 1. Import external agents
 Update `api_url` as needed in `tfsa_langgraph_external_agent.yaml`.
-- Example: `https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/chat/completions`
+- Example: `https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/api/v1/chat/completions`
 ```shell
+orchestrate env activate watsonx-challenge --api-key <api_key>
 orchestrate agents import -f tfsa_langgraph_external_agent.yaml
 ```
 
@@ -195,9 +196,9 @@ Yes, I want to contribute $2000
    ![Connect to TFSA External Agent->Trace Detail](screenshots/connect_to_tfsa_external_agent_trace_detail.png "Example of Trace Detail from IBM watsonx Orchestrate")
 
 3. Enhaced agentic communication cache and logs
-    - To check agent access request logs from watsonx Orchestrate: https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/logs
+    - To check agent access request logs from watsonx Orchestrate: https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/api/v1/logs
    ![Access Logs](screenshots/chat_langgraph_access_log.png "Access Logs")
-    - To manage agentic communication cache: https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/cache
+    - To manage agentic communication cache: https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/api/v1/cache
    ![Manage Cache](screenshots/chat_langgraph_manage_cache.png "Manage Cache")
 
 Note:

@@ -15,7 +15,7 @@ servers:
     description: TFSA assistant base URL (Code Engine)
 
 paths:
-  /chat/completions:
+  /api/v1/chat/completions:
     post:
       summary: Generate chat completions
       description: Generate a response from the agent based on the user input, similar to the OpenAI chat completions endpoint.

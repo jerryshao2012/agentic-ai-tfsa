@@ -6,6 +6,7 @@ import time
 import uuid
 from typing import Optional, Dict, Any
 
+import mlflow
 from fastapi import FastAPI, Header, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -24,16 +25,41 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
+# 1. Create the application that will hold all your API logic and endpoints.
+#    We'll call it `api_app`. Note we remove the invalid `prefix` argument.
+api_app = FastAPI(
+    title="TFSA LangGraph Assistant",
+    description="An agentic assistant for TFSA related queries.",
+    version="1.0.0",
+    # These paths are relative to the mount point, so they will become /api/v1/docs etc.
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
+)
+
+# 2. Create the main, top-level application. This will be our entrypoint.
 app = FastAPI()
 
+# 3. Mount your api_app onto the main app at the desired prefix.
+#    This is the key step that prefixes all routes, including docs.
+app.mount("/api/v1", api_app)
+
+# Now, all routers and routes are added to the `api_app`, not the main `app`.
 # Include the log router to add the /logs endpoint
-app.include_router(log_router)
+api_app.include_router(log_router)
 
 # Include the cache router to add the cache endpoints
-app.include_router(cache_router)
+api_app.include_router(cache_router)
+
+# Enabling tracing for LangGraph (LangChain)
+mlflow.langchain.autolog()
+
+# Optional: Set a tracking URI and an experiment
+mlflow.set_tracking_uri("http://localhost:5000")
+mlflow.set_experiment("TFSA LangGraph")
 
 
-@app.post("/chat/completions")
+@api_app.post("/chat/completions")
 async def chat_completions(
         request: ChatCompletionRequest,
         x_ibm_thread_id: Optional[str] = Header(None, alias="X-IBM-THREAD-ID",
@@ -41,7 +67,7 @@ async def chat_completions(
         _current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     start_time = time.time()
-    logger.info(f"Received POST /chat/completions ChatCompletionRequest: {request.model_dump_json()}")
+    logger.info(f"Received POST /api/v1/chat/completions ChatCompletionRequest: {request.model_dump_json()}")
     thread_id = ""
     if x_ibm_thread_id:
         thread_id = x_ibm_thread_id
