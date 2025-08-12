@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import logging
 
-from tfsa_assistant import chat_tfsa_assistant
+from tfsa_assistant_graph import run_tfsa_assistant_sync
 
 # ======================
 # 6. Example Usage
@@ -18,7 +18,7 @@ if __name__ == "__main__":
     # Example 1: Policy question
     logging.info(
         "\n=== EXAMPLE 1: Policy Question ===\nWhat are the annual dollar limits for each year of TSFA, including 2025?")
-    response_text, _ = chat_tfsa_assistant("What are the annual dollar limits for each year of TSFA, including 2025?")
+    response_text, _ = run_tfsa_assistant_sync("What are the annual dollar limits for each year of TSFA, including 2025?")
     logging.info(response_text)
     # Sample answer:
     # I believe you're asking about TFSA (Tax-Free Savings Account) contribution limits. Here are the annual TFSA contribution room limits for each year since the program began in Canada:
@@ -45,7 +45,7 @@ if __name__ == "__main__":
 
     # Example 2: Contribution intent
     logging.info("\n=== EXAMPLE 2: Contribution Intent ===\nI want to contribute to my TFSA")
-    response_text, _ = chat_tfsa_assistant("I want to contribute to my TFSA")
+    response_text, _ = run_tfsa_assistant_sync("I want to contribute to my TFSA")
     logging.info(response_text)
     # Sample answer:
     # I'd be happy to help you with information about TFSA contributions! To provide the most relevant guidance, could you tell me a bit more about your situation?
@@ -79,7 +79,7 @@ if __name__ == "__main__":
     # Example 3: Contribution room check (with user ID)
     logging.info(
         "\n=== EXAMPLE 3: Contribution Room Check ===\nMy user ID is user_123. What is my contribution room for 2025?")
-    response_text, state = chat_tfsa_assistant("My user ID is user_123. What is my contribution room for 2025?")
+    response_text, state = run_tfsa_assistant_sync("My user ID is user_123. What is my contribution room for 2025?")
     # Display response
     logging.info(response_text)
     # Sample answer:
@@ -93,10 +93,10 @@ if __name__ == "__main__":
     # Would you like to proceed with making a contribution? I can help you with the next steps if you'd like to contribute some or all of this available room.
 
     # Example 4: Contribution execution
-    if state.get("contribution_room") is not None:
+    if isinstance(state, dict) and state.get("contribution_room") is not None:
         amount = input(f"\nHow much would you like to contribute? (Room: ${state['contribution_room']:.2f}): ")
         user_input = f"My user ID is user_123. Contribute ${amount}"
         logging.info(f"\n=== EXAMPLE 4: Contribution Execution ===\n{user_input}")
-        response_text, _ = chat_tfsa_assistant(user_input)
+        response_text, _ = run_tfsa_assistant_sync(user_input)
         logging.info("\n💎 FINAL RESULT:")
         logging.info(response_text)

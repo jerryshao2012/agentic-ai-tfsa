@@ -4,7 +4,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 
-from tfsa_assistant import cache
+from tfsa_assistant_graph import cache
 
 # Create router for cache endpoints
 cache_router = APIRouter()

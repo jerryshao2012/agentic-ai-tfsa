@@ -1,7 +1,6 @@
 # app.py
 import json
 import logging
-import random
 import time
 import uuid
 from typing import Optional, Dict, Any
@@ -15,7 +14,7 @@ from llm_utils import get_llm_sync, get_llm_stream
 from log_utils import log_access, log_router  # Import log functions and router
 from models import ChatCompletionRequest, ChatCompletionResponse, Choice, MessageResponse, DEFAULT_MODEL
 from security import get_current_user
-from tfsa_assistant import chat_tfsa_assistant, cache, extract_user_id
+from tfsa_assistant_graph import run_tfsa_assistant_sync, run_tfsa_assistant_stream, cache, extract_user_id
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -78,7 +77,8 @@ async def chat_completions(
     model = DEFAULT_MODEL
     if request.model:
         model = request.model
-    selected_tools = [chat_tfsa_assistant]
+    # Set up tools as an array of tuples: first function is synchronous, second function is async, together is the first element
+    selected_tools = [[run_tfsa_assistant_sync, run_tfsa_assistant_stream]]
 
     # Extract user input from messages
     user_input = ""
@@ -111,24 +111,11 @@ async def chat_completions(
     if len(selected_tools) == 1:
         logger.info("Directly invoking single tool")
 
-        # Call the tool directly
-        tool_response, _ = selected_tools[0](user_input, thread_id)
-
-        # Update thread state if exists
-        if thread_cache_key and thread_state:
-            thread_state["user_input"] = user_input
-            thread_state["messages"].append({
-                "role": "user",
-                "content": user_input
-            })
-            thread_state["messages"].append({
-                "role": "assistant",
-                "content": tool_response
-            })
-            cache.cache(thread_cache_key, thread_state)
-
         # For non-streaming requests
         if not is_stream:
+            # Call the tool directly in synchronous mode
+            tool_response, _ = selected_tools[0][0](user_input, thread_id, model)
+
             # Create response
             id = str(uuid.uuid4())
             response = ChatCompletionResponse(
@@ -156,69 +143,43 @@ async def chat_completions(
 
         # For streaming requests
         else:
-            # Create a generator that simulates streaming response
-            def generate_stream():
-                # Break the response into chunks
-                chunk_size = 20  # Number of characters per chunk
-                response_length = len(tool_response)
+            # Create an async generator that wraps the async streaming tool
+            async def generate_stream():
+                try:
+                    # Call the async streaming tool directly
+                    async for chunk in selected_tools[0][1](user_input, thread_id, model):
+                        yield chunk
 
-                # Generate a unique ID for this response
-                response_id = str(uuid.uuid4())
+                    # Log access after streaming is complete
+                    log_access(user_id, thread_id, is_stream, user_input,
+                               response=f"[{(time.time() - start_time):.3f} seconds] [Streaming completed]",
+                               model=model)
 
-                # Send chunks
-                for i in range(0, response_length, chunk_size):
-                    chunk = tool_response[i:i + chunk_size]
-
-                    # Create SSE structure
-                    current_timestamp = int(time.time())
-                    struct = {
-                        "id": response_id,
+                except Exception as e:
+                    logger.error(f"Error in streaming: {str(e)}")
+                    # Send error message to client
+                    error_struct = {
+                        "id": str(uuid.uuid4()),
                         "object": "thread.message.delta",
-                        "created": current_timestamp,
+                        "created": int(time.time()),
                         "thread_id": thread_id,
                         "model": model,
                         "choices": [
                             {
                                 "delta": {
-                                    "content": chunk,
-                                    "role": "assistant",
-                                }
+                                    "content": f"Error occurred: {str(e)}"
+                                },
+                                "finish_reason": "error"
                             }
                         ]
                     }
+                    yield f"data: {json.dumps(error_struct)}\n\n"
+                    yield "data: [DONE]\n\n"
 
-                    # Format as SSE
-                    yield f"data: {json.dumps(struct)}\n\n"
-
-                    # Add small delay to simulate streaming
-                    time.sleep(random.uniform(0.05, 0.1))
-
-                # Send final stop message
-                stop_struct = {
-                    "id": response_id,
-                    "object": "thread.message.delta",
-                    "created": int(time.time()),
-                    "thread_id": thread_id,
-                    "model": model,
-                    "choices": [
-                        {
-                            "delta": {},
-                            "finish_reason": "stop"
-                        }
-                    ]
-                }
-                yield f"data: {json.dumps(stop_struct)}\n\n"
-                yield "data: [DONE]\n\n"
-
-            # Log access
-            log_access(user_id, thread_id, is_stream, user_input,
-                       response=f"[{(time.time() - start_time):.3f} seconds]\n{tool_response}",
-                       model=model)
-
-            # Return streaming response
             return StreamingResponse(generate_stream(), media_type="text/event-stream")
 
     # Standard processing flow
+    sync_selected_tools = [tool[0] for tool in selected_tools]
     if is_stream:
         # Create a wrapper to capture the streamed content and log after completion
         accumulated_response = ""
@@ -278,13 +239,13 @@ async def chat_completions(
                     cache.cache(_thread_cache_key, _thread_state)
 
         # Get the LLM stream generator
-        stream_generator = get_llm_stream(request.messages, model, thread_id, selected_tools)
+        stream_generator = get_llm_stream(request.messages, model, thread_id, sync_selected_tools)
         wrapped_generator = logging_wrapper(stream_generator)
 
         # Return streaming response
         return StreamingResponse(wrapped_generator, media_type="text/event-stream")
     else:
-        last_message, all_messages = get_llm_sync(request.messages, model, thread_id, selected_tools)
+        last_message, all_messages = get_llm_sync(request.messages, model, thread_id, sync_selected_tools)
         id = str(uuid.uuid4())
         response = ChatCompletionResponse(
             id=id,

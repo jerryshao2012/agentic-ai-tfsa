@@ -11,7 +11,7 @@ For official watsonx Orchestrate Agent Development Kit (ADK) documentation, refe
 This TFSA implementation demonstrates how to deploy an external agent as a serverless application in IBM Cloud. The application leverages 
 [FastAPI](https://fastapi.tiangolo.com) and [LangGraph](https://www.langchain.com/langgraph) to create a chat completion service that integrates with Ollama, Deepseek, IBM watsonx and OpenAI models. It also includes AI tool for TFSA policy search using [Tavily API](https://www.tavily.com).
 
-The API is designed to be used with IBM watsonx Orchestrate, but can be used independently as well. It must have an [OpenAI-compatible API endpoint](https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/docs/). Endpoints **honour `X-IBM-THREAD-ID`** for multi-turn conversations, **stream via SSE** when `stream=true`. Both stream and non-stream must be implemented.
+The API is designed to be used with IBM watsonx Orchestrate, but can be used independently as well. It must have an [OpenAI-compatible Assistants API endpoint](https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/docs/). Endpoints **honour `X-IBM-THREAD-ID`** for multi-turn conversations, **stream via SSE** when `stream=true`. Both stream and non-stream must be implemented.
 
 ## Features
 
@@ -22,7 +22,7 @@ The API is designed to be used with IBM watsonx Orchestrate, but can be used ind
 - **Logging and Debugging**: Logging is set up to facilitate debugging and monitoring of the application.
 
 Note:
-- In `app.py` that defines the `FastAPI` app object, `selected_tools = [chat_tfsa_assistant]` in the `chat_completions` function to enable the tool. Please make sure to update this line to match your tool configuration. the function `chat_completions`. You can choose any Python function for the tool.
+- In `app.py` that defines the `FastAPI` app object, `selected_tools = [run_tfsa_assistant_sync]` in the `chat_completions` function to enable the tool. Please make sure to update this line to match your tool configuration. the function `chat_completions`. You can choose any Python function for the tool.
 - Multiple tools can be added to the `chat_completions` function through `selected_tools`. It relays on calling `create_react_agent` to create an agent graph that calls tools in a loop until a stopping condition is met. This is a simple workflow that treat tools as conections. In the real complex business senarios, you may want to use a more sophisticated workflow.
 - `app.py` defines a `chat_completions` function that takes a `request` object as input and returns a `response` object.
 - We optimize tools calling to optimize performance: if there were one tool in the selected list `selected_tools`, we can directly call the tool to get the result. In testing, it will save 8 to 10 seconds for each tool call.

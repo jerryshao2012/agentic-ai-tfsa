@@ -1,4 +1,4 @@
-# tfsa_assistant.py
+# tfsa_assistant_graph.py
 import datetime
 import hashlib
 import json
@@ -7,6 +7,7 @@ import operator
 import os
 import re
 import time
+import uuid
 from typing import AsyncGenerator, TypedDict, Annotated, Optional
 
 import mlflow
@@ -16,7 +17,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 import config
 from cache import Cache
-from models import ModelName
+from models import ModelName, DEFAULT_MODEL
 
 logging.basicConfig(
     level=logging.INFO,
@@ -809,45 +810,55 @@ def extract_user_id(input_str: str) -> str:
 cache = Cache.instance("tfsa")
 
 
-def chat_tfsa_assistant(user_input: str, thread_id: Optional[str] = None) -> tuple[str, AgentState]:
-    """Run the TFSA LangGraph agent workflow and the answer"""
+def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
+                            _: Optional[str] = DEFAULT_MODEL) -> tuple[str, AgentState]:
+    """
+    Run the TFSA LangGraph agent workflow synchronously.
+
+    Args:
+        user_input: The user's input query
+        thread_id: Optional thread ID for conversation state management
+        _: Optional model for conversation state management
+
+    Returns:
+        Latest assistant response text
+        Final agent state after workflow execution
+    """
     start_time = time.time()
     try:
-        # Create initial state
-        state = {
-            "user_input": user_input,
-            "user_profile": None,
-            "search_results": None,
-            "contribution_room": None,
-            "contribution_amount": None,
-            "messages": []
-        }
-
-        # Retrieve thread state if exists
-        if thread_id:
-            thread_cache_key = f"thread_state_{thread_id}"
-            if cache.contains(thread_cache_key):
-                state = cache.load_from_cache(thread_cache_key).get("value")
-                state["user_input"] = user_input
-
-        # Create unique cache id to avoid duplicate requests
-        cache_hash = hashlib.sha256(f"{user_input}".encode('UTF-8')).hexdigest()
-        if cache.contains(cache_hash):
-            cache_item = cache.load_from_cache(cache_hash)
-            assistant_response_text = cache_item.get("value", "")
-
-            return assistant_response_text, state
+        # Check cache first
+        cached_response, state = _check_cache(user_input, thread_id)
+        if cached_response:
+            return cached_response, state
 
         # Execute workflow
-        current_state = run_tfsa_assistant_sync(state)
+        logging.info(f"\n🔹 USER QUERY: '{user_input}'")
+        accumulated_state = state.copy()
+        try:
+            for step in graph_app.stream(state):
+                for node, value in step.items():
+                    # Update accumulated state with node value
+                    accumulated_state.update(value)
+
+                    # Print node output
+                    if 'messages' in value and value['messages']:
+                        msg = value["messages"][-1]
+                        logging.info(f"🔹 [{node.upper()}]: {msg['content']}")
+        except Exception as e:
+            logging.error(f"Error executing workflow: {str(e)}")
+            # Return state with error message
+            state["messages"].append({
+                "role": "system",
+                "content": f"Workflow execution failed: {str(e)}"
+            })
 
         # Save thread state
         if thread_id:
             thread_cache_key = f"thread_state_{thread_id}"
-            cache.cache(thread_cache_key, current_state)
+            cache.cache(thread_cache_key, accumulated_state)
 
         # Extract last assistant message
-        assistant_msgs = [msg['content'] for msg in current_state['messages']
+        assistant_msgs = [msg['content'] for msg in accumulated_state['messages']
                           if msg.get('role') == 'assistant']
         if assistant_msgs:
             assistant_response_text = f"{assistant_msgs[-1]}".strip()
@@ -856,106 +867,210 @@ def chat_tfsa_assistant(user_input: str, thread_id: Optional[str] = None) -> tup
         else:
             assistant_response_text = "No response generated"
 
-        return assistant_response_text, current_state
-    finally:
-        logging.info("chat_tfsa_assistant finished in %.3f seconds", time.time() - start_time)
+        # Log token usage if MLflow tracing is enabled
+        _log_token_usage()
 
-
-def run_tfsa_assistant_sync(state: AgentState) -> AgentState:
-    """Run the TFSA LangGraph agent workflow"""
-    start_time = time.time()
-    try:
-        user_input = state["user_input"]
-        # Extract user ID from input if not already set
-        if not state.get("user_id"):
-            user_id = extract_user_id(user_input)
-            if user_id:
-                state["user_id"] = user_id
-
-        # Initialize missing state fields
-        state.setdefault("user_profile", None)
-        state.setdefault("search_results", None)
-        state.setdefault("contribution_room", None)
-        state.setdefault("contribution_amount", None)
-        state.setdefault("messages", [])
-
-        # Add user message to history
-        state["messages"].append({
-            "role": "user",
-            "content": state["user_input"]
-        })
-
-        # Execute workflow
-        logging.info(f"\n🔹 USER QUERY: '{user_input}'")
-        accumulated_state = state.copy()
-        for step in graph_app.stream(state):
-            for node, value in step.items():
-                # Update accumulated state with node value
-                accumulated_state.update(value)
-
-                # Print node output
-                if 'messages' in value and value['messages']:
-                    msg = value["messages"][-1]
-                    logging.info(f"🔹 [{node.upper()}]: {msg['content']}")
-
-        # Get the trace object just created
-        last_trace_id = mlflow.get_last_active_trace_id()
-        trace = mlflow.get_trace(trace_id=last_trace_id)
-
-        # Print the token usage
-        total_usage = trace.info.token_usage
-        logging.info("== Total token usage: ==")
-        logging.info(f"  Input tokens: {total_usage['input_tokens']}")
-        logging.info(f"  Output tokens: {total_usage['output_tokens']}")
-        logging.info(f"  Total tokens: {total_usage['total_tokens']}")
-
-        # Print the token usage for each LLM call
-        logging.info("\n== Token usage for each LLM call: ==")
-        for span in trace.data.spans:
-            if usage := span.get_attribute("mlflow.chat.tokenUsage"):
-                logging.info(f"{span.name}:")
-                logging.info(f"  Input tokens: {usage['input_tokens']}")
-                logging.info(f"  Output tokens: {usage['output_tokens']}")
-                logging.info(f"  Total tokens: {usage['total_tokens']}")
-
-        return accumulated_state
+        return assistant_response_text, accumulated_state
     finally:
         logging.info("run_tfsa_assistant_sync finished in %.3f seconds", time.time() - start_time)
 
 
-async def run_tfsa_assistant_stream(user_input: str) -> AsyncGenerator[str, None]:
+def _log_token_usage():
+    """Log token usage from MLflow trace if available."""
+    try:
+        # Get the trace object just created
+        last_trace_id = mlflow.get_last_active_trace_id()
+        if last_trace_id:
+            trace = mlflow.get_trace(trace_id=last_trace_id)
+
+            # Print the token usage
+            total_usage = trace.info.token_usage
+            logging.info("== Total token usage: ==")
+            logging.info(f"  Input tokens: {total_usage['input_tokens']}")
+            logging.info(f"  Output tokens: {total_usage['output_tokens']}")
+            logging.info(f"  Total tokens: {total_usage['total_tokens']}")
+
+            # Print the token usage for each LLM call
+            logging.info("\n== Token usage for each LLM call: ==")
+            for span in trace.data.spans:
+                if usage := span.get_attribute("mlflow.chat.tokenUsage"):
+                    logging.info(f"{span.name}:")
+                    logging.info(f"  Input tokens: {usage['input_tokens']}")
+                    logging.info(f"  Output tokens: {usage['output_tokens']}")
+                    logging.info(f"  Total tokens: {usage['total_tokens']}")
+    except Exception as e:
+        logging.warning(f"Could not log token usage: {str(e)}")
+
+
+def _format_resp(struct: dict) -> str:
+    """Formats a dictionary into a Server-Sent Event string."""
+    return "data: " + json.dumps(struct) + "\n\n"
+
+
+async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = None,
+                                    model: Optional[str] = DEFAULT_MODEL) -> AsyncGenerator[str, None]:
     """
     Streaming wrapper that yields SSE text/event-stream fragments.
     Compatible with watsonx Orchestrate external-agent streaming spec.
+
+    Args:
+        user_input: The user's input query
+        thread_id: Optional thread ID for conversation state management
+        model: Optional model for conversation state management
+
+    Yields:
+        SSE formatted streaming responses
     """
     start_time = time.time()
+
     try:
-        # Extract user ID from input
-        user_id = extract_user_id(user_input)
+        # Check cache first, which also initializes the state dictionary
+        cached_response, state = _check_cache(user_input, thread_id)
+        if cached_response:
+            struct = {
+                "id": str(uuid.uuid4()),
+                "object": "thread.message.delta",
+                "created": int(time.time()),
+                "thread_id": thread_id,
+                "model": model,
+                "choices": [{"delta": {"content": cached_response, "role": "assistant"}}],
+            }
+            yield _format_resp(struct)
+            yield "data: [DONE]\n\n"
+            return
 
-        # Build LangGraph input
-        state = {
-            "user_input": user_input,
-            "user_profile": None,
-            "search_results": None,
-            "contribution_room": None,
-            "contribution_amount": None,
-            "messages": [],
-        }
-        if user_id:
-            state["user_id"] = user_id
+        # This will hold the final state of the graph execution
+        final_state = {}
 
-        # LangGraph async stream
+        # Execute workflow and stream results in a single pass
+        logging.info(f"\n🔹 USER QUERY: '{user_input}'")
         async for event in graph_app.astream_events(state, version="v2"):
             kind = event["event"]
+            logging.debug(f"event = {event}")
+
+            # --- Logic to stream events to the client (no changes here) ---
             if kind == "on_chat_model_stream":
-                chunk = event["data"]["chunk"].content or ""
-                if chunk:
-                    yield f"data: {json.dumps({'choices': [{'delta': {'content': chunk}}]})}\n\n"
+                content = event["data"]["chunk"].content
+                if content:
+                    struct = {
+                        "id": str(uuid.uuid4()),
+                        "object": "thread.message.delta",
+                        "created": int(time.time()),
+                        "thread_id": thread_id,
+                        "model": model,
+                        "choices": [{"delta": {"content": content, "role": "assistant"}}],
+                    }
+                    yield _format_resp(struct)
+
             elif kind == "on_tool_start":
-                yield f"data: {json.dumps({'choices': [{'delta': {'role': 'assistant', 'tool_calls': [{'id': event['run_id'], 'function': {'name': event['name'], 'arguments': json.dumps(event['data'].get('input', {}))}}]}}]})}\n\n"
+                step_details = {
+                    "type": "tool_calls",
+                    "tool_calls": [{"id": event['run_id'], "name": event['name'], "args": event['data'].get('input')}]
+                }
+                struct = {
+                    "id": str(uuid.uuid4()),
+                    "object": "thread.run.step.delta",
+                    "thread_id": thread_id,
+                    "model": model,
+                    "created": int(time.time()),
+                    "choices": [{"delta": {"role": "assistant", "step_details": step_details}}],
+                }
+                yield _format_resp(struct)
+
             elif kind == "on_tool_end":
-                yield f"data: {json.dumps({'choices': [{'delta': {'role': 'tool', 'content': event['data'].get('output', '')}}]})}\n\n"
+                output = event.get('data', {}).get('output')
+                content = json.dumps(output) if not isinstance(output, str) else output
+                step_details = {
+                    "type": "tool_response",
+                    "name": event['name'],
+                    "tool_call_id": event['run_id'],
+                    "content": content
+                }
+                struct = {
+                    "id": str(uuid.uuid4()),
+                    "object": "thread.run.step.delta",
+                    "thread_id": thread_id,
+                    "model": model,
+                    "created": int(time.time()),
+                    "choices": [{"delta": {"role": "assistant", "step_details": step_details}}],
+                }
+                yield _format_resp(struct)
+
+            # The 'on_chain_end' event for the top-level graph contains the final output state.
+            if kind == "on_chain_end" and event["name"] == "LangGraph":
+                if "output" in event["data"]:
+                    final_state = event["data"]["output"]
+
+        # Save the final state to the thread cache
+        if thread_id and final_state:
+            thread_cache_key = f"thread_state_{thread_id}"
+            cache.cache(thread_cache_key, final_state)
+            logging.info(f"Saved final state to cache for thread_id: {thread_id}")
+
+        # Log token usage
+        _log_token_usage()
+
+        # Send the final [DONE] message correctly at the end of the stream
+        yield "data: [DONE]\n\n"
+
+    except Exception as e:
+        logging.error(f"Error in run_tfsa_assistant_stream: {str(e)}", exc_info=True)
+        error_message = f"An error occurred while processing your request: {str(e)}"
+        yield f"data: {json.dumps({'choices': [{'delta': {'content': error_message}}]})}\n\n"
         yield "data: [DONE]\n\n"
     finally:
         logging.info("run_tfsa_assistant_stream finished in %.3f seconds", time.time() - start_time)
+
+
+def _check_cache(user_input: str, thread_id: Optional[str] = None) -> tuple[Optional[str], dict]:
+    """
+    Check if response is cached and return it if available.
+
+    Args:
+        user_input: The user's input query
+        thread_id: Optional thread ID for conversation state management
+
+    Returns:
+        Cached response content or None if not cached
+        Cached state or initialized state if not cached
+    """
+    # Retrieve thread state if exists
+    # Create initial state
+    state = {}
+
+    # Initialize missing state fields
+    state.setdefault("user_profile", None)
+    state.setdefault("search_results", None)
+    state.setdefault("contribution_room", None)
+    state.setdefault("contribution_amount", None)
+    state.setdefault("messages", [])
+
+    # Retrieve thread state if exists
+    if thread_id:
+        thread_cache_key = f"thread_state_{thread_id}"
+        if cache.contains(thread_cache_key):
+            state = cache.load_from_cache(thread_cache_key).get("value")
+    state["user_input"] = user_input
+    if "messages" not in state:
+        state["messages"] = []
+
+    # Add user message to history
+    state["messages"].append({
+        "role": "user",
+        "content": state["user_input"]
+    })
+
+    # Extract user ID from input if not already set
+    if not state.get("user_id"):
+        user_id = extract_user_id(user_input)
+        if user_id:
+            state["user_id"] = user_id
+        else:
+            state["user_id"] = "unknown"
+
+    # Create unique cache id to avoid duplicate requests
+    cache_hash = hashlib.sha256(f"{user_input}".encode('UTF-8')).hexdigest()
+    if cache.contains(cache_hash):
+        cache_item = cache.load_from_cache(cache_hash)
+        return cache_item.get("value", ""), state
+    return None, state

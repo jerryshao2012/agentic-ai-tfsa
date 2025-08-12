@@ -1,6 +1,5 @@
 # tfsa_assistant.py
 import datetime
-import hashlib
 import json
 import logging
 import operator
@@ -10,13 +9,10 @@ import time
 from typing import AsyncGenerator, TypedDict, Annotated, Optional
 
 import mlflow
+from dotenv import load_dotenv
 from langchain.tools import tool
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
-
-import config
-from cache import Cache
-from models import ModelName
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,68 +28,62 @@ logging.basicConfig(
 # TODO: Multi-year projection tool
 # TODO: Integrated tax impact analysis
 
-if 'ollama' in config.AI_SERVICES_PROVIDER:
-    # Configuration for Ollama. Initialize Ollama with qwen2.5vl:7b model locally
-    from langchain_ollama import ChatOllama
+load_dotenv('.env')
 
-    llm = ChatOllama(
-        model=ModelName.ollama_qwen2_5vl_7b,
-        # other params...
-        temperature=0)  # Use your preferred qwen2.5vl:7b variant
-elif 'deepseek' in config.AI_SERVICES_PROVIDER:
-    # Configuration for Deepseek. Initialize DeepSeek LLM: pip install -U langchain-deepseek
-    from langchain_deepseek import ChatDeepSeek
+# Configuration for Deepseek. Initialize DeepSeek LLM: pip install -U langchain-deepseek
+# from langchain_deepseek import ChatDeepSeek
+#
+# DEEPSEEK_API_KEY = os.environ['DEEPSEEK_API_KEY']
+# llm = ChatDeepSeek(model="deepseek-chat", temperature=0, api_key=DEEPSEEK_API_KEY)
 
-    llm = ChatDeepSeek(
-        model=ModelName.deepseek_chat,
-        # other params...
-        temperature=0,
-        api_key=config.DEEPSEEK_API_KEY)
-elif 'openai' in config.AI_SERVICES_PROVIDER:
-    # Configuration for OpenAI. Initialize OpenAI LLM: pip install -U langchain-openai
-    from langchain_openai import ChatOpenAI
+# Configuration for Ollama. Initialize Ollama with qwen2.5vl:7b model locally
+from langchain_ollama import ChatOllama
 
-    llm = ChatOpenAI(
-        model=ModelName.openai_gpt_4_o_mini,
-        # other params...
-        temperature=0,
-        streaming=False,
-        api_key=config.OPENAI_API_KEY)
-else:
-    # Configuration for Watsonx.ai
-    from ibm_watson_machine_learning.foundation_models import Model
-    from ibm_watson_machine_learning.metanames import GenTextParamsMetaNames as GenParams
+llm = ChatOllama(
+    model="qwen2.5vl:7b",
+    # other params...
+    temperature=0)  # Use your preferred qwen2.5vl:7b variant
 
-    # Initialize Watsonx model
-    watsonx_params = {
-        GenParams.DECODING_METHOD: "greedy",
-        GenParams.MIN_NEW_TOKENS: 1,
-        GenParams.MAX_NEW_TOKENS: 1024,
-        GenParams.TEMPERATURE: 0,
-    }
+# Configuration for Watsonx.ai
+# from ibm_watson_machine_learning.foundation_models import Model
+# from ibm_watson_machine_learning.metanames import GenTextParamsMetaNames as GenParams
+#
+# IBM_CLOUD_URL = os.getenv("IBM_CLOUD_URL")
+# WATSONX_API_KEY = os.getenv("API_KEY")
+# WATSONX_PROJECT_ID = os.getenv("PROJECT_ID")
+#
+# # Initialize Watsonx model
+# watsonx_params = {
+#     GenParams.DECODING_METHOD: "greedy",
+#     GenParams.MIN_NEW_TOKENS: 1,
+#     GenParams.MAX_NEW_TOKENS: 1024,
+#     GenParams.TEMPERATURE: 0,
+# }
+#
+# watsonx_model = Model(
+#     model_id="ibm/granite-13b-instruct-v2",
+#     params=watsonx_params,
+#     credentials={
+#         "apikey": WATSONX_API_KEY,
+#         "url": IBM_CLOUD_URL
+#     },
+#     project_id=WATSONX_PROJECT_ID
+# )
+#
+#
+# # Helper function for Watsonx invocation
+# class WatsonLLM:
+#     @staticmethod
+#     def invoke(prompt: str) -> str:
+#         """Invoke Watsonx model with prompt and return response"""
+#         response = watsonx_model.generate_text(prompt)
+#         return response
+#
+#
+# llm = WatsonLLM()
 
-    watsonx_model = Model(
-        model_id=ModelName.watsonx_llama_3_2_90b,
-        # other params...
-        params=watsonx_params,
-        credentials={
-            "apikey": config.WATSONX_API_KEY,
-            "url": config.WATSONX_URL
-        },
-        project_id=config.WATSONX_PROJECT_ID
-    )
-
-
-    # Helper function for Watsonx invocation
-    class WatsonLLM:
-        @staticmethod
-        def invoke(prompt: str) -> str:
-            """Invoke Watsonx model with prompt and return response"""
-            response = watsonx_model.generate_text(prompt)
-            return response
-
-
-    llm = WatsonLLM()
+# Load Tavily API key (set as environment variable TAVILY_API_KEY)
+TAVILY_API_KEY = os.environ['TAVILY_API_KEY']
 
 
 # ======================
@@ -194,7 +184,7 @@ def search_cra_tfsa_policy(query: str) -> list:
     """Searches Canada CRA website for current TFSA policies using Tavily"""
     # pip install -U langchain-tavily
     from langchain_tavily import TavilySearch
-    tavily = TavilySearch(api_key=config.TAVILY_API_KEY, max_results=3)
+    tavily = TavilySearch(api_key=TAVILY_API_KEY, max_results=3)
     # Real-time policy verification using Tavily search
     results = tavily.invoke({
         "query": f"site:canada.ca TFSA {datetime.datetime.now().year} {query}",
@@ -662,11 +652,6 @@ def response_agent(state: AgentState):
             else:
                 final_content = final_content.strip()
 
-        if len(final_content) > 0:
-            # Create unique cache id to avoid duplicate requests
-            cache_hash = hashlib.sha256(f"{user_input}".encode('UTF-8')).hexdigest()
-            # Only cache the policy user query
-            cache.cache(cache_hash, final_content, metadata={"user_input": user_input})
     except Exception as e:
         logging.error(f"Response generation failed: {str(e)}")
         final_content = "\n".join(assistant_messages)  # Fallback to original messages
@@ -806,9 +791,6 @@ def extract_user_id(input_str: str) -> str:
     return None
 
 
-cache = Cache.instance("tfsa")
-
-
 def chat_tfsa_assistant(user_input: str, thread_id: Optional[str] = None) -> tuple[str, AgentState]:
     """Run the TFSA LangGraph agent workflow and the answer"""
     start_time = time.time()
@@ -823,28 +805,8 @@ def chat_tfsa_assistant(user_input: str, thread_id: Optional[str] = None) -> tup
             "messages": []
         }
 
-        # Retrieve thread state if exists
-        if thread_id:
-            thread_cache_key = f"thread_state_{thread_id}"
-            if cache.contains(thread_cache_key):
-                state = cache.load_from_cache(thread_cache_key).get("value")
-                state["user_input"] = user_input
-
-        # Create unique cache id to avoid duplicate requests
-        cache_hash = hashlib.sha256(f"{user_input}".encode('UTF-8')).hexdigest()
-        if cache.contains(cache_hash):
-            cache_item = cache.load_from_cache(cache_hash)
-            assistant_response_text = cache_item.get("value", "")
-
-            return assistant_response_text, state
-
         # Execute workflow
         current_state = run_tfsa_assistant_sync(state)
-
-        # Save thread state
-        if thread_id:
-            thread_cache_key = f"thread_state_{thread_id}"
-            cache.cache(thread_cache_key, current_state)
 
         # Extract last assistant message
         assistant_msgs = [msg['content'] for msg in current_state['messages']

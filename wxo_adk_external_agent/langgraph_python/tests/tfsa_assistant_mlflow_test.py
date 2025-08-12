@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import mlflow
 
-from tfsa_assistant import chat_tfsa_assistant
+from tfsa_assistant_graph import run_tfsa_assistant_sync
 
 # Enabling tracing for LangGraph (LangChain)
 mlflow.langchain.autolog()
@@ -17,5 +17,5 @@ mlflow.set_tracking_uri("http://localhost:5000")
 mlflow.set_experiment("TFSA LangGraph")
 
 if __name__ == "__main__":
-    result = chat_tfsa_assistant("What are the annual dollar limits for each year of TSFA, including 2025?")
+    result = run_tfsa_assistant_sync("What are the annual dollar limits for each year of TSFA, including 2025?")
     print(result)
