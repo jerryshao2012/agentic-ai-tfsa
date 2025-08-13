@@ -6,6 +6,7 @@ import operator
 import os
 import re
 import time
+import uuid
 from typing import AsyncGenerator, TypedDict, Annotated, Optional
 
 import mlflow
@@ -34,11 +35,13 @@ load_dotenv('.env')
 # from langchain_deepseek import ChatDeepSeek
 #
 # DEEPSEEK_API_KEY = os.environ['DEEPSEEK_API_KEY']
+# model ="deepseek-chat"
 # llm = ChatDeepSeek(model="deepseek-chat", temperature=0, api_key=DEEPSEEK_API_KEY)
 
 # Configuration for Ollama. Initialize Ollama with qwen2.5vl:7b model locally
 from langchain_ollama import ChatOllama
 
+model = "qwen2.5vl:7b"
 llm = ChatOllama(
     model="qwen2.5vl:7b",
     # other params...
@@ -60,6 +63,7 @@ llm = ChatOllama(
 #     GenParams.TEMPERATURE: 0,
 # }
 #
+# model = "ibm/granite-13b-instruct-v2"
 # watsonx_model = Model(
 #     model_id="ibm/granite-13b-instruct-v2",
 #     params=watsonx_params,
@@ -791,25 +795,45 @@ def extract_user_id(input_str: str) -> str:
     return None
 
 
-def chat_tfsa_assistant(user_input: str, thread_id: Optional[str] = None) -> tuple[str, AgentState]:
-    """Run the TFSA LangGraph agent workflow and the answer"""
+def run_tfsa_assistant_sync(user_input: str) -> tuple[str, AgentState]:
+    """
+    Run the TFSA LangGraph agent workflow synchronously.
+
+    Args:
+        user_input: The user's input query
+
+    Returns:
+        Latest assistant response text
+        Final agent state after workflow execution
+    """
     start_time = time.time()
     try:
-        # Create initial state
-        state = {
-            "user_input": user_input,
-            "user_profile": None,
-            "search_results": None,
-            "contribution_room": None,
-            "contribution_amount": None,
-            "messages": []
-        }
+        # Check cache first
+        state = _initializes_state(user_input)
 
         # Execute workflow
-        current_state = run_tfsa_assistant_sync(state)
+        logging.info(f"\n🔹 USER QUERY: '{user_input}'")
+        accumulated_state = state.copy()
+        try:
+            for step in graph_app.stream(state):
+                for node, value in step.items():
+                    # Update accumulated state with node value
+                    accumulated_state.update(value)
+
+                    # Print node output
+                    if 'messages' in value and value['messages']:
+                        msg = value["messages"][-1]
+                        logging.info(f"🔹 [{node.upper()}]: {msg['content']}")
+        except Exception as e:
+            logging.error(f"Error executing workflow: {str(e)}")
+            # Return state with error message
+            state["messages"].append({
+                "role": "system",
+                "content": f"Workflow execution failed: {str(e)}"
+            })
 
         # Extract last assistant message
-        assistant_msgs = [msg['content'] for msg in current_state['messages']
+        assistant_msgs = [msg['content'] for msg in accumulated_state['messages']
                           if msg.get('role') == 'assistant']
         if assistant_msgs:
             assistant_response_text = f"{assistant_msgs[-1]}".strip()
@@ -818,106 +842,176 @@ def chat_tfsa_assistant(user_input: str, thread_id: Optional[str] = None) -> tup
         else:
             assistant_response_text = "No response generated"
 
-        return assistant_response_text, current_state
-    finally:
-        logging.info("chat_tfsa_assistant finished in %.3f seconds", time.time() - start_time)
+        # Log token usage if MLflow tracing is enabled
+        _log_token_usage()
 
-
-def run_tfsa_assistant_sync(state: AgentState) -> AgentState:
-    """Run the TFSA LangGraph agent workflow"""
-    start_time = time.time()
-    try:
-        user_input = state["user_input"]
-        # Extract user ID from input if not already set
-        if not state.get("user_id"):
-            user_id = extract_user_id(user_input)
-            if user_id:
-                state["user_id"] = user_id
-
-        # Initialize missing state fields
-        state.setdefault("user_profile", None)
-        state.setdefault("search_results", None)
-        state.setdefault("contribution_room", None)
-        state.setdefault("contribution_amount", None)
-        state.setdefault("messages", [])
-
-        # Add user message to history
-        state["messages"].append({
-            "role": "user",
-            "content": state["user_input"]
-        })
-
-        # Execute workflow
-        logging.info(f"\n🔹 USER QUERY: '{user_input}'")
-        accumulated_state = state.copy()
-        for step in graph_app.stream(state):
-            for node, value in step.items():
-                # Update accumulated state with node value
-                accumulated_state.update(value)
-
-                # Print node output
-                if 'messages' in value and value['messages']:
-                    msg = value["messages"][-1]
-                    logging.info(f"🔹 [{node.upper()}]: {msg['content']}")
-
-        # Get the trace object just created
-        last_trace_id = mlflow.get_last_active_trace_id()
-        trace = mlflow.get_trace(trace_id=last_trace_id)
-
-        # Print the token usage
-        total_usage = trace.info.token_usage
-        logging.info("== Total token usage: ==")
-        logging.info(f"  Input tokens: {total_usage['input_tokens']}")
-        logging.info(f"  Output tokens: {total_usage['output_tokens']}")
-        logging.info(f"  Total tokens: {total_usage['total_tokens']}")
-
-        # Print the token usage for each LLM call
-        logging.info("\n== Token usage for each LLM call: ==")
-        for span in trace.data.spans:
-            if usage := span.get_attribute("mlflow.chat.tokenUsage"):
-                logging.info(f"{span.name}:")
-                logging.info(f"  Input tokens: {usage['input_tokens']}")
-                logging.info(f"  Output tokens: {usage['output_tokens']}")
-                logging.info(f"  Total tokens: {usage['total_tokens']}")
-
-        return accumulated_state
+        return assistant_response_text, accumulated_state
     finally:
         logging.info("run_tfsa_assistant_sync finished in %.3f seconds", time.time() - start_time)
+
+
+def _log_token_usage():
+    """Log token usage from MLflow trace if available."""
+    try:
+        # Get the trace object just created
+        last_trace_id = mlflow.get_last_active_trace_id()
+        if last_trace_id:
+            trace = mlflow.get_trace(trace_id=last_trace_id)
+
+            # Print the token usage
+            total_usage = trace.info.token_usage
+            logging.info("== Total token usage: ==")
+            logging.info(f"  Input tokens: {total_usage['input_tokens']}")
+            logging.info(f"  Output tokens: {total_usage['output_tokens']}")
+            logging.info(f"  Total tokens: {total_usage['total_tokens']}")
+
+            # Print the token usage for each LLM call
+            logging.info("\n== Token usage for each LLM call: ==")
+            for span in trace.data.spans:
+                if usage := span.get_attribute("mlflow.chat.tokenUsage"):
+                    logging.info(f"{span.name}:")
+                    logging.info(f"  Input tokens: {usage['input_tokens']}")
+                    logging.info(f"  Output tokens: {usage['output_tokens']}")
+                    logging.info(f"  Total tokens: {usage['total_tokens']}")
+    except Exception as e:
+        logging.warning(f"Could not log token usage: {str(e)}")
+
+
+def _format_resp(struct: dict) -> str:
+    """Formats a dictionary into a Server-Sent Event string."""
+    return "data: " + json.dumps(struct) + "\n\n"
 
 
 async def run_tfsa_assistant_stream(user_input: str) -> AsyncGenerator[str, None]:
     """
     Streaming wrapper that yields SSE text/event-stream fragments.
     Compatible with watsonx Orchestrate external-agent streaming spec.
+
+    Args:
+        user_input: The user's input query
+
+    Yields:
+        SSE formatted streaming responses
     """
     start_time = time.time()
+
     try:
-        # Extract user ID from input
-        user_id = extract_user_id(user_input)
+        # Initializes the state dictionary
+        state = _initializes_state(user_input)
 
-        # Build LangGraph input
-        state = {
-            "user_input": user_input,
-            "user_profile": None,
-            "search_results": None,
-            "contribution_room": None,
-            "contribution_amount": None,
-            "messages": [],
-        }
-        if user_id:
-            state["user_id"] = user_id
+        # This will hold the final state of the graph execution
+        final_state = {}
 
-        # LangGraph async stream
+        # Execute workflow and stream results in a single pass
+        logging.info(f"\n🔹 USER QUERY: '{user_input}'")
         async for event in graph_app.astream_events(state, version="v2"):
             kind = event["event"]
+            logging.debug(f"event = {event}")
+
+            # --- Logic to stream events to the client (no changes here) ---
             if kind == "on_chat_model_stream":
-                chunk = event["data"]["chunk"].content or ""
-                if chunk:
-                    yield f"data: {json.dumps({'choices': [{'delta': {'content': chunk}}]})}\n\n"
+                content = event["data"]["chunk"].content
+                if content:
+                    struct = {
+                        "id": str(uuid.uuid4()),
+                        "object": "thread.message.delta",
+                        "created": int(time.time()),
+                        "model": model,
+                        "choices": [{"delta": {"content": content, "role": "assistant"}}],
+                    }
+                    yield _format_resp(struct)
+
             elif kind == "on_tool_start":
-                yield f"data: {json.dumps({'choices': [{'delta': {'role': 'assistant', 'tool_calls': [{'id': event['run_id'], 'function': {'name': event['name'], 'arguments': json.dumps(event['data'].get('input', {}))}}]}}]})}\n\n"
+                step_details = {
+                    "type": "tool_calls",
+                    "tool_calls": [{"id": event['run_id'], "name": event['name'], "args": event['data'].get('input')}]
+                }
+                struct = {
+                    "id": str(uuid.uuid4()),
+                    "object": "thread.run.step.delta",
+                    "model": model,
+                    "created": int(time.time()),
+                    "choices": [{"delta": {"role": "assistant", "step_details": step_details}}],
+                }
+                yield _format_resp(struct)
+
             elif kind == "on_tool_end":
-                yield f"data: {json.dumps({'choices': [{'delta': {'role': 'tool', 'content': event['data'].get('output', '')}}]})}\n\n"
+                output = event.get('data', {}).get('output')
+                content = json.dumps(output) if not isinstance(output, str) else output
+                step_details = {
+                    "type": "tool_response",
+                    "name": event['name'],
+                    "tool_call_id": event['run_id'],
+                    "content": content
+                }
+                struct = {
+                    "id": str(uuid.uuid4()),
+                    "object": "thread.run.step.delta",
+                    "model": model,
+                    "created": int(time.time()),
+                    "choices": [{"delta": {"role": "assistant", "step_details": step_details}}],
+                }
+                yield _format_resp(struct)
+
+            # The 'on_chain_end' event for the top-level graph contains the final output state.
+            if kind == "on_chain_end" and event["name"] == "LangGraph":
+                if "output" in event["data"]:
+                    final_state = event["data"]["output"]
+
+        # Log token usage
+        _log_token_usage()
+
+        # Send the final [DONE] message correctly at the end of the stream
+        yield "data: [DONE]\n\n"
+
+    except Exception as e:
+        logging.error(f"Error in run_tfsa_assistant_stream: {str(e)}", exc_info=True)
+        error_message = f"An error occurred while processing your request: {str(e)}"
+        yield f"data: {json.dumps({'choices': [{'delta': {'content': error_message}}]})}\n\n"
         yield "data: [DONE]\n\n"
     finally:
         logging.info("run_tfsa_assistant_stream finished in %.3f seconds", time.time() - start_time)
+
+
+def _initializes_state(user_input: str) -> dict:
+    """
+    Check if response is cached and return it if available.
+
+    Args:
+        user_input: The user's input query
+
+    Returns:
+        Cached response content or None if not cached
+        Cached state or initialized state if not cached
+    """
+    # Retrieve thread state if exists
+    # Create initial state
+    state = {}
+
+    # Initialize missing state fields
+    state.setdefault("user_profile", None)
+    state.setdefault("search_results", None)
+    state.setdefault("contribution_room", None)
+    state.setdefault("contribution_amount", None)
+    state.setdefault("messages", [])
+
+    # Retrieve thread state if exists
+    state["user_input"] = user_input
+    if "messages" not in state:
+        state["messages"] = []
+
+    # Add user message to history
+    state["messages"].append({
+        "role": "user",
+        "content": state["user_input"]
+    })
+
+    # Extract user ID from input if not already set
+    if not state.get("user_id"):
+        user_id = extract_user_id(user_input)
+        if user_id:
+            state["user_id"] = user_id
+        else:
+            state["user_id"] = "unknown"
+
+    return state

@@ -70,7 +70,7 @@ def get_tfsa_advice(payload: UserInputRequest,
             )
 
         # Execute workflow
-        result = run_tfsa_assistant_sync(full_input)
+        _, result = run_tfsa_assistant_sync(full_input)
 
         # Extract last assistant message
         assistant_msgs = [msg['content'] for msg in result['messages']
