@@ -1053,6 +1053,8 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
 
         # This will hold the final state of the graph execution
         final_state = {}
+        # This will hold content that has already been streamed to avoid duplication
+        streamed_content = ""
 
         # Execute workflow and stream results in a single pass
         logging.info(f"\n🔹 USER QUERY: '{user_input}'")
@@ -1064,6 +1066,7 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
             if kind == "on_chat_model_stream":
                 content = event["data"]["chunk"].content
                 if content:
+                    streamed_content += content
                     struct = {
                         "id": str(uuid.uuid4()),
                         "object": "thread.message.delta",
@@ -1112,6 +1115,24 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
             if kind == "on_chain_end" and event["name"] == "LangGraph":
                 if "output" in event["data"]:
                     final_state = event["data"]["output"]
+
+        # After the stream is complete, extract the final response from the state.
+        # This is necessary for agents that produce a final response without streaming it
+        # (e.g., using a non-streaming LLM call or generating it from a template).
+        if final_state:
+            assistant_msgs = [msg['content'] for msg in final_state.get('messages', [])
+                              if msg.get('role') == 'assistant']
+            if assistant_msgs:
+                final_response = assistant_msgs[-1]
+                # Only stream the final response if it hasn't been streamed already.
+                if final_response and final_response != streamed_content:
+                    struct = {
+                        "id": str(uuid.uuid4()),
+                        "object": "thread.message.delta",
+                        "created": int(time.time()), "thread_id": thread_id, "model": model,
+                        "choices": [{"delta": {"content": final_response, "role": "assistant"}}],
+                    }
+                    yield _format_resp(struct)
 
         # Save the final state to the thread cache
         if thread_id and final_state:

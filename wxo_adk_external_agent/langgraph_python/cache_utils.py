@@ -320,6 +320,9 @@ async def manage_cache():
 
     # Add table rows with full values in scrollable containers
     for key, item in cache_data.items():
+        # Skip cached state
+        if key.startswith("thread_state_"):
+            continue
         metadata = item.get("metadata", "")
         expires_at = item["expires_at"]
         value_str = str(item["value"])
@@ -330,9 +333,10 @@ async def manage_cache():
             expires_dt = datetime.fromtimestamp(expires_at)
             expires_display = expires_dt.strftime('%Y-%m-%d %H:%M:%S')
 
+        # Add table row
         html_content += f"""
                 <tr>
-                    <td>{key}<br/>{expires_display}<br/>{metadata}</td>
+                    <td>{key}<br/>Expire:&nbsp;{expires_display}<br/>Metadata:&nbsp;{metadata}</td>
                     <td id="value-{key}" class="value-container">{value_str}</td>
                     <td class="countdown" data-expires-at="{expires_at}">
                         Calculating...
@@ -343,7 +347,7 @@ async def manage_cache():
                     </td>
                 </tr>
                 """
-
+    # Close table
     html_content += """
                 </tbody>
             </table>
