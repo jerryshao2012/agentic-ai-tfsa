@@ -375,43 +375,19 @@ def document_agent(state: AgentState):
     else:
         user_info = "User: General Inquiry"
 
-    # Format TFSA limits for the prompt
-    global TFSA_LIMITS
-    tfsa_limits_lines = []
-
-    # Group consecutive years with same limits
-    sorted_years = sorted(TFSA_LIMITS.keys())
-    if sorted_years:
-        start_year = sorted_years[0]
-        end_year = start_year
-        current_limit = TFSA_LIMITS[start_year]
-
-        for year in sorted_years[1:] + [None]:  # Add None to process the last group
-            if year is None or TFSA_LIMITS[year] != current_limit:
-                # End of a group
-                if start_year == end_year:
-                    tfsa_limits_lines.append(f"- Annual limit {start_year}: ${current_limit}")
-                else:
-                    tfsa_limits_lines.append(f"- Annual limit {start_year}-{end_year}: ${current_limit}")
-
-                # Start a new group
-                if year is not None:
-                    start_year = year
-                    end_year = year
-                    current_limit = TFSA_LIMITS[year]
-            else:
-                # Continue current group
-                end_year = year
-
-    tfsa_limits_str = "\n".join(tfsa_limits_lines)
-
     prompt = f"""
     You are a TFSA policy expert. Current year: {current_year}
     {user_info}
     User Question: {state['user_input']}
 
     Known historical rules:
-    {tfsa_limits_str}
+    - Annual limit 2009-2012: $5000
+    - Annual limit 2013-2014: $5500
+    - Annual limit 2015: $10000
+    - Annual limit 2016-2018: $5500
+    - Annual limit 2019-2022: $6000
+    - Annual limit 2023: $6500
+    - Annual limit 2024: $7000
     - Withdrawals re-added to room NEXT calendar year
     - Overcontribution penalty: 1% per month
 
@@ -1102,24 +1078,15 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
 
         logging.info(f"\n🔹 USER QUERY: '{user_input}'")
 
-        # Track the last time we sent an event (including heartbeats)
-        last_event_time = time.time()
-
         while True:
             try:
-                # Wait for an event from the graph, with a 5 seconds timeout
-                item = await asyncio.wait_for(event_queue.get(), timeout=5)
+                # Wait for an event from the graph, with a 5-second timeout.
+                item = await asyncio.wait_for(event_queue.get(), timeout=5.0)
             except asyncio.TimeoutError:
-                # If we time out, check if it's been more than 5 seconds since last event
-                if time.time() - last_event_time >= 5.0:
-                    # Send a heartbeat and update last_event_time
-                    yield ":heartbeat\n\n"
-                    last_event_time = time.time()
-                # Continue to check for events
+                # If we time out, it means no graph event was received for 5 seconds.
+                # Send a heartbeat to keep the connection alive and continue waiting.
+                yield ":heartbeat\n\n"
                 continue
-
-            # Update last event time for any received item
-            last_event_time = time.time()
 
             item_type = item.get("type")
 
