@@ -632,8 +632,9 @@ def response_agent(state: AgentState):
         else:
             final_content = llm.invoke(prompt)
 
-        # Patch final_content
+        # Patch final_content to make it more readable
         final_content = final_content.replace("• ", "* ")
+        final_content = final_content.replace("    ", "")
         # Convert to lowercase for case-insensitive search
         targets = ["response:", "answer:"]
 

@@ -77,7 +77,7 @@ class Cache(object):
                     return unique_key in self.cache_dict
             return False
 
-    def cache(self, unique_key, data_to_cache, timeout=18000, metadata=None):
+    def cache(self, unique_key, data_to_cache, timeout=18000, metadata=None, expires_at=None):
         if not self.CACHE_ENABLED:
             return
         if metadata is None:
@@ -90,10 +90,16 @@ class Cache(object):
             else:
                 self.cache_dict = {}
 
+            # Determine expiration time
+            if expires_at is None:
+                expiration_timestamp = time.time() + timeout
+            else:
+                expiration_timestamp = expires_at
+
             # Create cache item with metadata
             cache_item = {
                 "value": data_to_cache,
-                "expires_at": time.time() + timeout,
+                "expires_at": expiration_timestamp,
                 "metadata": metadata
             }
             self.cache_dict[unique_key] = cache_item
