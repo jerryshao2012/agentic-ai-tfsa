@@ -1055,15 +1055,45 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
         # Check cache first, which also initializes the state dictionary
         cached_response, state = _check_cache_initialize_state(user_input, thread_id)
         if cached_response:
+            # To simulate a real stream, generate a single run ID to use for all chunks.
+            run_id = f"run-{uuid.uuid4()}"
+
+            # Split the cached response into chunks for streaming simulation
+            chunk_size = 50  # Characters per chunk
+            chunks = [cached_response[i:i + chunk_size] for i in range(0, len(cached_response), chunk_size)]
+
+            # Yield each chunk with a small delay to simulate streaming
+            is_first_chunk = True
+            for chunk in chunks:
+                if chunk:  # Only yield non-empty chunks
+                    # The 'role' should only be sent in the first delta chunk of a message.
+                    delta = {"content": chunk}
+                    if is_first_chunk:
+                        delta["role"] = "assistant"
+                        is_first_chunk = False
+
+                    struct = {
+                        "id": run_id,
+                        "object": "thread.message.delta",
+                        "created": int(time.time()),
+                        "thread_id": thread_id,
+                        "model": model,
+                        "choices": [{"delta": delta}],
+                    }
+                    yield _format_resp(struct)
+                    # Add a small delay to simulate streaming
+                    await asyncio.sleep(0.05)
+
             struct = {
                 "id": str(uuid.uuid4()),
                 "object": "thread.message.delta",
                 "created": int(time.time()),
                 "thread_id": thread_id,
                 "model": model,
-                "choices": [{"delta": {"content": cached_response, "role": "assistant"}}],
+                "choices": [{"delta": {"content": "", "role": "assistant"}}],
             }
             yield _format_resp(struct)
+
             yield "data: [DONE]\n\n"
             return
 
@@ -1084,7 +1114,13 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
                 item = await asyncio.wait_for(event_queue.get(), timeout=5.0)
             except asyncio.TimeoutError:
                 # If we time out, it means no graph event was received for 5 seconds.
-                # Send a heartbeat to keep the connection alive and continue waiting.
+
+                # Send a heartbeat to keep the connection alive and continue waiting:
+                # The underlying protocol for these streams is Server-Sent Events (SSE). According to the SSE
+                # specification, any line that begins with a colon (:) is treated as a comment and should be ignored
+                # by the client. This is the standard and recommended way to implement a heartbeat or keep-alive
+                # mechanism. It prevents client-side or proxy timeouts during long-running agent tasks without
+                # interfering with the structured data events.
                 yield ":heartbeat\n\n"
                 continue
 
