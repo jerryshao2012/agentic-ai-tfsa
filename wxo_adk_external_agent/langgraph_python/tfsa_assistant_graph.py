@@ -138,6 +138,7 @@ class AgentState(TypedDict):
     user_profile: Optional[dict]
     search_results: Optional[list]
     contribution_room: Optional[float]
+    current_tfsa_limit: Optional[float]
     contribution_amount: Optional[float]
     messages: Annotated[list[dict], operator.add]
 
@@ -206,9 +207,9 @@ def execute_tfsa_contribution(user_id: str, amount: float) -> dict:
     new_contributions = profile["current_year_contributions"] + amount
     return {
         "status": "success",
-        "new_balance": 6500 + new_contributions,  # Base + contributions
+        "new_balance": profile["past_contributions"] + new_contributions,  # Base + contributions
         "new_contributions": new_contributions,
-        "transaction_id": f"TFSA-{datetime.datetime.now().year}-{hash(str(datetime.datetime.now()))}"
+        "transaction_id": f"TFSA-{datetime.datetime.now().year}-{uuid.uuid4()}"
     }
 
 
@@ -373,9 +374,22 @@ def search_agent(state: AgentState):
         response_content = response.content.strip() if hasattr(response, 'content') else response.strip()
 
         # Try to parse the JSON response
-        policy_data = _get_json_from_str(response_content, {"error": "Could not parse policy data"})
+        policy_data = _get_json_from_str(response_content,
+                                         {"answer": response_content, "error": "Could not parse policy data"})
+
+        # Extract and store the current year's limit directly in the state
+        current_limit = None
+        try:
+            limit_str = str(policy_data.get("current_limit", ""))
+            match = re.search(r'\$?(\d{1,3}(?:,\d{3})*(?:\.\d+)?)', limit_str)
+            if match:
+                current_limit = float(match.group(1).replace(',', ''))
+        except (ValueError, TypeError):
+            logging.warning("Could not parse current_limit from search_agent response.")
+
         return {
             "search_results": results,
+            "current_tfsa_limit": current_limit,
             "messages": [{
                 "role": "search_agent",
                 "content": f"{policy_data}",
@@ -406,18 +420,7 @@ def calculation_agent(state: AgentState):
     profile = state["user_profile"]
 
     # Get current year limit
-    current_limit = 7000  # Default for 2024
-    for msg in reversed(state["messages"]):
-        if msg.get("role") == "search_agent" and "policy_data" in msg:
-            try:
-                limit_str = str(msg["policy_data"].get("current_limit", ""))
-                # Extract numerical value
-                match = re.search(r'\$?(\d{1,3}(?:,\d{3})*(?:\.\d+)?)', limit_str)
-                if match:
-                    current_limit = float(match.group(1).replace(',', ''))
-            except:
-                continue
-            break
+    current_limit = state.get("current_tfsa_limit") or 7000  # Use value from state, with a fallback
 
     # Calculate total accumulated room
     total_room = 0
@@ -1025,6 +1028,7 @@ def _check_cache_initialize_state(user_input: str, thread_id: Optional[str] = No
     state.setdefault("user_profile", None)
     state.setdefault("search_results", None)
     state.setdefault("contribution_room", None)
+    state.setdefault("current_tfsa_limit", None)
     state.setdefault("contribution_amount", None)
     state.setdefault("messages", [])
 
