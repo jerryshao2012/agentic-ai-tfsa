@@ -1,4 +1,5 @@
 # tfsa_assistant_graph.py
+import asyncio
 import datetime
 import hashlib
 import json
@@ -374,19 +375,43 @@ def document_agent(state: AgentState):
     else:
         user_info = "User: General Inquiry"
 
+    # Format TFSA limits for the prompt
+    global TFSA_LIMITS
+    tfsa_limits_lines = []
+
+    # Group consecutive years with same limits
+    sorted_years = sorted(TFSA_LIMITS.keys())
+    if sorted_years:
+        start_year = sorted_years[0]
+        end_year = start_year
+        current_limit = TFSA_LIMITS[start_year]
+
+        for year in sorted_years[1:] + [None]:  # Add None to process the last group
+            if year is None or TFSA_LIMITS[year] != current_limit:
+                # End of a group
+                if start_year == end_year:
+                    tfsa_limits_lines.append(f"- Annual limit {start_year}: ${current_limit}")
+                else:
+                    tfsa_limits_lines.append(f"- Annual limit {start_year}-{end_year}: ${current_limit}")
+
+                # Start a new group
+                if year is not None:
+                    start_year = year
+                    end_year = year
+                    current_limit = TFSA_LIMITS[year]
+            else:
+                # Continue current group
+                end_year = year
+
+    tfsa_limits_str = "\n".join(tfsa_limits_lines)
+
     prompt = f"""
     You are a TFSA policy expert. Current year: {current_year}
     {user_info}
     User Question: {state['user_input']}
 
     Known historical rules:
-    - Annual limit 2009-2012: $5000
-    - Annual limit 2013-2014: $5500
-    - Annual limit 2015: $10000
-    - Annual limit 2016-2018: $5500
-    - Annual limit 2019-2022: $6000
-    - Annual limit 2023: $6500
-    - Annual limit 2024: $7000
+    {tfsa_limits_str}
     - Withdrawals re-added to room NEXT calendar year
     - Overcontribution penalty: 1% per month
 
@@ -1019,11 +1044,25 @@ def _format_resp(struct: dict) -> str:
     return "data: " + json.dumps(struct) + "\n\n"
 
 
+async def _stream_graph_events(graph: CompiledStateGraph, state: dict, queue: asyncio.Queue):
+    """Streams graph events into a queue and signals completion."""
+    try:
+        async for event in graph.astream_events(state, version="v2"):
+            await queue.put({"type": "graph_event", "event": event})
+    except Exception as e:
+        logging.error(f"Error during graph execution: {e}", exc_info=True)
+        await queue.put({"type": "error", "error": e})
+    finally:
+        # Signal that the graph stream is finished
+        await queue.put({"type": "done"})
+
+
 async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = None,
                                     model: Optional[str] = DEFAULT_MODEL) -> AsyncGenerator[str, None]:
     """
     Streaming wrapper that yields SSE text/event-stream fragments.
     Compatible with watsonx Orchestrate external-agent streaming spec.
+    Includes a heartbeat to keep the connection alive.
 
     Args:
         user_input: The user's input query
@@ -1034,6 +1073,7 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
         SSE formatted streaming responses
     """
     start_time = time.time()
+    graph_task = None
 
     try:
         # Check cache first, which also initializes the state dictionary
@@ -1056,13 +1096,50 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
         # This will hold content that has already been streamed to avoid duplication
         streamed_content = ""
 
-        # Execute workflow and stream results in a single pass
+        # --- Heartbeat and Streaming Logic ---
+        event_queue = asyncio.Queue()
+        graph_task = asyncio.create_task(_stream_graph_events(graph_app, state, event_queue))
+
         logging.info(f"\n🔹 USER QUERY: '{user_input}'")
-        async for event in graph_app.astream_events(state, version="v2"):
-            kind = event["event"]
+
+        # Track the last time we sent an event (including heartbeats)
+        last_event_time = time.time()
+
+        while True:
+            try:
+                # Wait for an event from the graph, with a 5 seconds timeout
+                item = await asyncio.wait_for(event_queue.get(), timeout=5)
+            except asyncio.TimeoutError:
+                # If we time out, check if it's been more than 5 seconds since last event
+                if time.time() - last_event_time >= 5.0:
+                    # Send a heartbeat and update last_event_time
+                    yield ":heartbeat\n\n"
+                    last_event_time = time.time()
+                # Continue to check for events
+                continue
+
+            # Update last event time for any received item
+            last_event_time = time.time()
+
+            item_type = item.get("type")
+
+            if item_type == "error":
+                # Propagate the error to the main exception handler
+                raise item["error"]
+
+            if item_type == "done":
+                # The graph stream has finished, exit the loop
+                break
+
+            # Process the graph event
+            event = item.get("event")
+            if not event:
+                continue
+
+            kind = event.get("event")
             logging.debug(f"event = {event}")
 
-            # --- Logic to stream events to the client (no changes here) ---
+            # --- Logic to stream events to the client ---
             if kind == "on_chat_model_stream":
                 content = event["data"]["chunk"].content
                 if content:
@@ -1080,14 +1157,10 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
             elif kind == "on_tool_start":
                 step_details = {
                     "type": "tool_calls",
-                    "tool_calls": [{"id": event['run_id'], "name": event['name'], "args": event['data'].get('input')}]
-                }
+                    "tool_calls": [{"id": event['run_id'], "name": event['name'], "args": event['data'].get('input')}]}
                 struct = {
-                    "id": str(uuid.uuid4()),
-                    "object": "thread.run.step.delta",
-                    "thread_id": thread_id,
-                    "model": model,
-                    "created": int(time.time()),
+                    "id": str(uuid.uuid4()), "object": "thread.run.step.delta", "thread_id": thread_id,
+                    "model": model, "created": int(time.time()),
                     "choices": [{"delta": {"role": "assistant", "step_details": step_details}}],
                 }
                 yield _format_resp(struct)
@@ -1096,35 +1169,27 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
                 output = event.get('data', {}).get('output')
                 content = json.dumps(output) if not isinstance(output, str) else output
                 step_details = {
-                    "type": "tool_response",
-                    "name": event['name'],
-                    "tool_call_id": event['run_id'],
-                    "content": content
+                    "type": "tool_response", "name": event['name'], "tool_call_id": event['run_id'], "content": content
                 }
                 struct = {
-                    "id": str(uuid.uuid4()),
-                    "object": "thread.run.step.delta",
-                    "thread_id": thread_id,
-                    "model": model,
-                    "created": int(time.time()),
+                    "id": str(uuid.uuid4()), "object": "thread.run.step.delta", "thread_id": thread_id,
+                    "model": model, "created": int(time.time()),
                     "choices": [{"delta": {"role": "assistant", "step_details": step_details}}],
                 }
                 yield _format_resp(struct)
 
-            # The 'on_chain_end' event for the top-level graph contains the final output state.
+            # Capture the final state at the end of the graph run
             if kind == "on_chain_end" and event["name"] == "LangGraph":
                 if "output" in event["data"]:
                     final_state = event["data"]["output"]
 
         # After the stream is complete, extract the final response from the state.
-        # This is necessary for agents that produce a final response without streaming it
-        # (e.g., using a non-streaming LLM call or generating it from a template).
+        # This is necessary for agents that produce a final response without streaming it.
         if final_state:
             assistant_msgs = [msg['content'] for msg in final_state.get('messages', [])
                               if msg.get('role') == 'assistant']
             if assistant_msgs:
                 final_response = assistant_msgs[-1]
-                # Only stream the final response if it hasn't been streamed already.
                 if final_response and final_response != streamed_content:
                     struct = {
                         "id": str(uuid.uuid4()),
@@ -1152,6 +1217,9 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
         yield f"data: {json.dumps({'choices': [{'delta': {'content': error_message}}]})}\n\n"
         yield "data: [DONE]\n\n"
     finally:
+        # Clean up background tasks to prevent them from running forever
+        if graph_task:
+            graph_task.cancel()
         logging.info("run_tfsa_assistant_stream finished in %.3f seconds", time.time() - start_time)
 
 
