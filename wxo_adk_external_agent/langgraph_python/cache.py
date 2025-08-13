@@ -112,15 +112,29 @@ class Cache(object):
         if not self.CACHE_ENABLED:
             logging.warning("Cache is disabled")
             return None
+
+        # Remove expired items first
         self.remove_expired()
+
         with thread_locks[self.cache_name]:
             if os.path.exists(self.cache_file_path):
                 with open(self.cache_file_path, 'rb') as handle:
                     self.cache_dict = pickle.load(handle)
-                    if unique_key in self.cache_dict:
-                        return self.cache_dict[unique_key]
-            raise Exception(
-                f"Error: {unique_key} not found. Call Cache.contains() prior to calling Cache.load_from_cache()")
+
+                # Check if key exists in current cache
+                if unique_key in self.cache_dict:
+                    # Check if item is expired
+                    item = self.cache_dict[unique_key]
+                    expires_at = item.get('expires_at', 0)
+                    if 0 < expires_at < time.time():
+                        # Item is expired, remove it
+                        del self.cache_dict[unique_key]
+                        with open(self.cache_file_path, 'wb+') as handle:
+                            pickle.dump(self.cache_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+                        return None
+
+                    return item
+            return None  # Return None instead of raising exception
 
     # Add these methods to the Cache class
     def get_all(self) -> dict:

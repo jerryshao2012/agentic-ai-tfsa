@@ -16,7 +16,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source
-COPY *.py ./
+COPY *.py *.json ./
 
 # Copy configuration files
 COPY nginx.conf /etc/nginx/conf.d/default.conf

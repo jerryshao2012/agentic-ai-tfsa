@@ -79,6 +79,134 @@ def initialize_llm():
 
 llm = initialize_llm()
 
+# Constants for TFSA limits file
+TFSA_LIMITS_FILE = "tfsa_limits.json"
+
+
+def _load_or_update_tfsa_limits() -> dict:
+    """
+    Load TFSA limits from file or update them by searching for missing years.
+    Returns a dictionary of year -> limit mappings.
+    """
+    current_year = datetime.datetime.now().year
+    limits = {}
+
+    # Base historical limits
+    base_limits = {
+        2009: 5000, 2010: 5000, 2011: 5000, 2012: 5000,
+        2013: 5500, 2014: 5500, 2015: 10000, 2016: 5500,
+        2017: 5500, 2018: 5500, 2019: 6000, 2020: 6000,
+        2021: 6000, 2022: 6000, 2023: 6500, 2024: 7000
+    }
+
+    # Try to load from file first
+    if os.path.exists(TFSA_LIMITS_FILE):
+        try:
+            with open(TFSA_LIMITS_FILE, 'r') as f:
+                file_limits = json.load(f)
+                # Convert string keys to integers
+                limits = {int(year): limit for year, limit in file_limits.items()}
+            logging.info(f"Loaded TFSA limits from {TFSA_LIMITS_FILE}")
+        except Exception as e:
+            logging.warning(f"Failed to load TFSA limits from file: {e}")
+            limits = base_limits.copy()
+    else:
+        limits = base_limits.copy()
+
+    # Check if we have limits up to current year
+    missing_years = []
+    for year in range(2009, current_year + 1):
+        if year not in limits:
+            missing_years.append(year)
+
+    # If we're missing current or future years, search for them
+    if missing_years:
+        logging.info(f"Missing TFSA limits for years: {missing_years}. Searching for updates...")
+        updated_limits = _search_for_missing_limits(missing_years, limits)
+        if updated_limits:
+            limits.update(updated_limits)
+            # Save updated limits to file
+            try:
+                with open(TFSA_LIMITS_FILE, 'w') as f:
+                    # Convert integer keys to strings for JSON serialization
+                    json.dump({str(year): limit for year, limit in limits.items()}, f, indent=2)
+                logging.info(f"Saved updated TFSA limits to {TFSA_LIMITS_FILE}")
+            except Exception as e:
+                logging.warning(f"Failed to save TFSA limits to file: {e}")
+
+    return limits
+
+
+def _search_for_missing_limits(missing_years: list, current_limits: dict) -> dict:
+    """
+    Search for missing TFSA limits using web search.
+    Returns a dictionary of year -> limit mappings for the missing years.
+    """
+    try:
+        # Create a search query for the missing years
+        years_str = ", ".join(map(str, missing_years))
+        search_query = f"Canada TFSA contribution limits {years_str}"
+
+        # Use Tavily search first, fallback to DuckDuckGo
+        try:
+            search_results = search_cra_tfsa_policy.invoke(search_query)
+        except Exception as e:
+            logging.warning(f"Tavily search failed: {e}. Falling back to DuckDuckGo.")
+            search_results = search_cra_tfsa_policy_duck_duck_go.invoke(search_query)
+
+        # Use LLM to extract the TFSA limits from search results
+        prompt = f"""
+        You are a financial policy expert. I need to find the TFSA (Tax-Free Savings Account) 
+        annual contribution limits for the following years in Canada: {years_str}.
+        
+        Here are the search results:
+        {json.dumps(search_results, indent=2)}
+        
+        Known historical limits:
+        {json.dumps(current_limits, indent=2)}
+        
+        Please extract the official TFSA contribution limits for the missing years.
+        Provide the information in JSON format with year as key and limit as value:
+        {{
+            "2025": 7000,
+            "2026": 7500
+        }}
+        
+        Only include the years you are confident about. If you cannot find information for a year,
+        do not include it in the response. Respond with ONLY the JSON object.
+        """
+
+        # Use the already initialized LLM
+        response = llm.invoke(prompt)
+        response_content = response.content.strip() if hasattr(response, 'content') else response.strip()
+
+        # Parse the JSON response
+        result = _get_json_from_str(response_content, {})
+
+        # Validate that the result contains only numeric years and limits
+        validated_result = {}
+        for year, limit in result.items():
+            try:
+                year_int = int(year)
+                limit_float = float(limit)
+                if year_int in missing_years:  # Only include requested years
+                    validated_result[year_int] = int(limit_float)
+            except (ValueError, TypeError):
+                logging.warning(f"Invalid year or limit in search result: {year} -> {limit}")
+                continue
+
+        logging.info(f"Found TFSA limits for years: {list(validated_result.keys())}")
+        return validated_result
+
+    except Exception as e:
+        logging.error(f"Error searching for missing TFSA limits: {e}")
+        return {}
+
+
+# Load or update TFSA limits at startup
+TFSA_LIMITS = _load_or_update_tfsa_limits()
+logging.info(f"TFSA Limits loaded: {TFSA_LIMITS}")
+
 
 # ======================
 # 0. Help functions
@@ -420,7 +548,10 @@ def calculation_agent(state: AgentState):
     profile = state["user_profile"]
 
     # Get current year limit
-    current_limit = state.get("current_tfsa_limit") or 7000  # Use value from state, with a fallback
+    global TFSA_LIMITS
+    if current_year not in TFSA_LIMITS:
+        TFSA_LIMITS = _load_or_update_tfsa_limits()
+    current_limit = state.get("current_tfsa_limit") or TFSA_LIMITS.get(current_year, 6000)  # Use dynamic limits
 
     # Calculate total accumulated room
     total_room = 0
@@ -429,15 +560,9 @@ def calculation_agent(state: AgentState):
         birth_year = current_year - profile["age"]
         first_year = max(profile["first_tfsa_year"], birth_year + 18)
 
-        # Historical limits
-        limits = {
-            2019: 6000, 2020: 6000, 2021: 6000, 2022: 6000,
-            2023: 6500, 2024: 7000
-        }
-
         total_room = 0
         for year in range(first_year, current_year):
-            total_room += limits.get(year, 6000)  # Default to 6000 for unknown years
+            total_room += TFSA_LIMITS.get(year, 0)  # Default to 0 for unknown years
 
         # Add current year's limit
         total_room += current_limit
