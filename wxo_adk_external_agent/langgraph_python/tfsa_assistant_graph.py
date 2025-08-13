@@ -24,6 +24,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
+
 # Reduces call center volume by 80%+
 # Processes contributions in <2 seconds
 # Ensures 100% compliance with CRA regulations
@@ -33,74 +34,56 @@ logging.basicConfig(
 # TODO: Multi-year projection tool
 # TODO: Integrated tax impact analysis
 
-if 'ollama' in config.AI_SERVICES_PROVIDER:
-    # Configuration for Ollama. Initialize Ollama with qwen2.5vl:7b model locally
-    from langchain_ollama import ChatOllama
+def initialize_llm():
+    """Initializes and returns the appropriate LLM based on configuration."""
+    provider = config.AI_SERVICES_PROVIDER
 
-    llm = ChatOllama(
-        model=ModelName.ollama_qwen2_5vl_7b,
-        # other params...
-        temperature=0)  # Use your preferred qwen2.5vl:7b variant
-elif 'deepseek' in config.AI_SERVICES_PROVIDER:
-    # Configuration for Deepseek. Initialize DeepSeek LLM: pip install -U langchain-deepseek
-    from langchain_deepseek import ChatDeepSeek
+    if 'ollama' in provider:
+        from langchain_ollama import ChatOllama
+        return ChatOllama(model=ModelName.ollama_qwen2_5vl_7b, temperature=0)
 
-    llm = ChatDeepSeek(
-        model=ModelName.deepseek_chat,
-        # other params...
-        temperature=0,
-        api_key=config.DEEPSEEK_API_KEY)
-elif 'openai' in config.AI_SERVICES_PROVIDER:
-    # Configuration for OpenAI. Initialize OpenAI LLM: pip install -U langchain-openai
-    from langchain_openai import ChatOpenAI
+    if 'deepseek' in provider:
+        from langchain_deepseek import ChatDeepSeek
+        return ChatDeepSeek(model=ModelName.deepseek_chat, temperature=0, api_key=config.DEEPSEEK_API_KEY)
 
-    llm = ChatOpenAI(
-        model=ModelName.openai_gpt_4_o_mini,
-        # other params...
-        temperature=0,
-        streaming=False,
-        api_key=config.OPENAI_API_KEY)
-else:
-    # Configuration for Watsonx.ai
+    if 'openai' in provider:
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model=ModelName.openai_gpt_4_o_mini, temperature=0, streaming=False,
+                          api_key=config.OPENAI_API_KEY)
+
+    # Default to Watsonx.ai
     from ibm_watson_machine_learning.foundation_models import Model
     from ibm_watson_machine_learning.metanames import GenTextParamsMetaNames as GenParams
 
-    # Initialize Watsonx model
-    watsonx_params = {
-        GenParams.DECODING_METHOD: "greedy",
-        GenParams.MIN_NEW_TOKENS: 1,
-        GenParams.MAX_NEW_TOKENS: 1024,
-        GenParams.TEMPERATURE: 0,
-    }
-
-    watsonx_model = Model(
-        model_id=ModelName.watsonx_llama_3_2_90b,
-        # other params...
-        params=watsonx_params,
-        credentials={
-            "apikey": config.WATSONX_API_KEY,
-            "url": config.WATSONX_URL
-        },
-        project_id=config.WATSONX_PROJECT_ID
-    )
-
-
-    # Helper function for Watsonx invocation
     class WatsonLLM:
-        @staticmethod
-        def invoke(prompt: str) -> str:
+        def __init__(self):
+            watsonx_params = {
+                GenParams.DECODING_METHOD: "greedy",
+                GenParams.MIN_NEW_TOKENS: 1,
+                GenParams.MAX_NEW_TOKENS: 1024,
+                GenParams.TEMPERATURE: 0,
+            }
+            self.model = Model(
+                model_id=ModelName.watsonx_llama_3_2_90b,
+                params=watsonx_params,
+                credentials={"apikey": config.WATSONX_API_KEY, "url": config.WATSONX_URL},
+                project_id=config.WATSONX_PROJECT_ID
+            )
+
+        def invoke(self, prompt: str) -> str:
             """Invoke Watsonx model with prompt and return response"""
-            response = watsonx_model.generate_text(prompt)
-            return response
+            return self.model.generate_text(prompt)
+
+    return WatsonLLM()
 
 
-    llm = WatsonLLM()
+llm = initialize_llm()
 
 
 # ======================
 # 0. Help functions
 # ======================
-def get_json_from_str(json_str: str, fallback_json: dict) -> dict:
+def _get_json_from_str(json_str: str, fallback_json: dict) -> dict:
     """Convert json string to dict"""
     try:
         return json.loads(json_str)
@@ -141,7 +124,8 @@ def get_json_from_str(json_str: str, fallback_json: dict) -> dict:
                     return json.loads(json_str)
                 else:
                     return fallback_json
-            except:
+            except Exception as final_e:
+                logging.error(f"JSON parsing failed 3rd try: {str(final_e)}")
                 return fallback_json
 
 
@@ -321,7 +305,7 @@ def document_agent(state: AgentState):
     else:
         response_content = llm.invoke(prompt)
 
-    data = get_json_from_str(response_content, {
+    data = _get_json_from_str(response_content, {
         "policy_summary": response_content,
         "needs_current_search": True
     })
@@ -389,7 +373,7 @@ def search_agent(state: AgentState):
         response_content = response.content.strip() if hasattr(response, 'content') else response.strip()
 
         # Try to parse the JSON response
-        policy_data = get_json_from_str(response_content, {"error": "Could not parse policy data"})
+        policy_data = _get_json_from_str(response_content, {"error": "Could not parse policy data"})
         return {
             "search_results": results,
             "messages": [{
@@ -763,7 +747,6 @@ def create_workflow() -> CompiledStateGraph:
     )
 
     # Define terminal edges for the graph
-    workflow.add_edge("calculation_agent", END)
     workflow.add_edge("transaction_agent", END)
     workflow.add_edge("search_agent", "response_agent")
     workflow.add_edge("response_agent", END)
@@ -827,7 +810,7 @@ def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
     start_time = time.time()
     try:
         # Check cache first
-        cached_response, state = _check_cache(user_input, thread_id)
+        cached_response, state = _check_cache_initialize_state(user_input, thread_id)
         if cached_response:
             return cached_response, state
 
@@ -925,7 +908,7 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
 
     try:
         # Check cache first, which also initializes the state dictionary
-        cached_response, state = _check_cache(user_input, thread_id)
+        cached_response, state = _check_cache_initialize_state(user_input, thread_id)
         if cached_response:
             struct = {
                 "id": str(uuid.uuid4()),
@@ -1022,7 +1005,7 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
         logging.info("run_tfsa_assistant_stream finished in %.3f seconds", time.time() - start_time)
 
 
-def _check_cache(user_input: str, thread_id: Optional[str] = None) -> tuple[Optional[str], dict]:
+def _check_cache_initialize_state(user_input: str, thread_id: Optional[str] = None) -> tuple[Optional[str], dict]:
     """
     Check if response is cached and return it if available.
 
