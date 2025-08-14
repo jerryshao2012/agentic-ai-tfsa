@@ -9,11 +9,10 @@ from typing import List, Dict, Any
 from ibm_watsonx_ai import APIClient, Credentials
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage, BaseMessage, ToolCall
 from langchain_ibm import ChatWatsonx
-from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
-from config import OPENAI_API_KEY, WATSONX_SPACE_ID, WATSONX_API_KEY, WATSONX_URL, WATSONX_PROJECT_ID
-from models import Message, AIToolCall, Function
+import config
+from models import Message, AIToolCall, Function, ModelName
 from token_utils import get_access_token
 
 logging.basicConfig(
@@ -22,7 +21,8 @@ logging.basicConfig(
 )
 
 
-def init_openai(model: str, parm_overrides=None):
+def _create_model_instance(model: str, parm_overrides=None):
+    """Creates and returns the appropriate LLM instance based on configuration."""
     if parm_overrides is None:
         parm_overrides = {}
     defaults = {
@@ -30,7 +30,47 @@ def init_openai(model: str, parm_overrides=None):
         'streaming': False
     }
     defaults.update(parm_overrides)
-    return ChatOpenAI(model=model, **defaults)
+
+    provider = config.AI_SERVICES_PROVIDER
+
+    if 'ollama' in provider:
+        from langchain_ollama import ChatOllama
+        return ChatOllama(model=model if model else ModelName.ollama_qwen2_5vl_7b,
+                          **defaults)
+
+    if 'deepseek' in provider:
+        if not config.DEEPSEEK_API_KEY:
+            raise ValueError("DEEPSEEK_API_KEY is not set")
+
+        from langchain_deepseek import ChatDeepSeek
+        return ChatDeepSeek(model=model if model else ModelName.deepseek_chat,
+                            api_key=config.DEEPSEEK_API_KEY,
+                            **defaults)
+
+    if 'openai' in provider:
+        if not config.OPENAI_API_KEY:
+            raise ValueError("OPENAI_API_KEY is not set")
+
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model=model if model else ModelName.openai_gpt_4_o_mini,
+                          api_key=config.OPENAI_API_KEY,
+                          **defaults)
+
+    # Default to Watsonx.ai
+    if config.WATSONX_SPACE_ID:
+        client_model_instance = APIClient(
+            credentials=Credentials(url=config.WATSONX_URL, token=get_access_token(config.WATSONX_API_KEY)),
+            space_id=config.WATSONX_SPACE_ID)
+    elif config.WATSONX_PROJECT_ID:
+        client_model_instance = APIClient(
+            credentials=Credentials(url=config.WATSONX_URL, token=get_access_token(config.WATSONX_API_KEY)),
+            project_id=config.WATSONX_PROJECT_ID)
+    else:
+        raise ValueError("You must either set WATSONX_SPACE_ID or WATSONX_PROJECT_ID")
+    model_instance = ChatWatsonx(model_id=model,
+                                 watsonx_client=client_model_instance,
+                                 **defaults)
+    return model_instance
 
 
 def convert_messages_to_langgraph_format(messages: List[Message]) -> Dict[str, Any]:
@@ -140,23 +180,8 @@ def convert_response_to_messages(response: dict) -> List[Message]:
 
 def get_llm_sync(messages: List[Message], model: str, _thread_id: str, tools):
     logging.info(f"LLM Synchronous call using model {model} and tools {tools}")
-    if 'gpt' in model:
-        if not OPENAI_API_KEY:
-            return "API key not set\n"
-        model_instance = init_openai(model, {})
-    else:
-        client_model_instance = None
-        if WATSONX_SPACE_ID:
-            client_model_instance = APIClient(
-                credentials=Credentials(url=WATSONX_URL, token=get_access_token(WATSONX_API_KEY)),
-                space_id=WATSONX_SPACE_ID)
-        elif WATSONX_PROJECT_ID:
-            client_model_instance = APIClient(
-                credentials=Credentials(url=WATSONX_URL, token=get_access_token(WATSONX_API_KEY)),
-                project_id=WATSONX_PROJECT_ID)
-        else:
-            logging.error("You must either set WATSONX_SPACE_ID or WATSONX_PROJECT_ID")
-        model_instance = ChatWatsonx(model_id=model, watsonx_client=client_model_instance)
+    # Create the model instance
+    model_instance = _create_model_instance(model)
     logging.info(f"Starting with input messages: {messages}")
     inputs = convert_messages_to_langgraph_format(messages)
     validate_chat_history(inputs["messages"])
@@ -220,23 +245,8 @@ async def get_llm_stream(messages: List[Message], model: str, thread_id: str, to
     if not thread_id:
         logging.warning("Warning no thread_id specified in input")
         thread_id = ""
-    if 'gpt' in model:
-        if not OPENAI_API_KEY:
-            yield "API key not set\n"
-        model_instance = init_openai(model, model_init_overrides)
-    else:
-        client_model_instance = None
-        if WATSONX_SPACE_ID:
-            client_model_instance = APIClient(
-                credentials=Credentials(url=WATSONX_URL, token=get_access_token(WATSONX_API_KEY)),
-                space_id=WATSONX_SPACE_ID)
-        elif WATSONX_PROJECT_ID:
-            client_model_instance = APIClient(
-                credentials=Credentials(url=WATSONX_URL, token=get_access_token(WATSONX_API_KEY)),
-                project_id=WATSONX_PROJECT_ID)
-        else:
-            logging.error("You must either set WATSONX_SPACE_ID or WATSONX_PROJECT_ID")
-        model_instance = ChatWatsonx(model_id=model, watsonx_client=client_model_instance)
+    # Create the model instance
+    model_instance = _create_model_instance(model, model_init_overrides)
     if use_tools:
         graph = create_react_agent(model_instance, tools=tools)
     else:
