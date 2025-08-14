@@ -136,15 +136,20 @@ It is recommended to implement your own authentication security measures to ensu
    - [MLflow Tracing](https://mlflow.org/docs/latest/genai/tracing/) provides automatic tracing capability for LangGraph, as a extension of its LangChain integration. By enabling auto-tracing for LangChain by calling the `mlflow.langchain.autolog()` function, MLflow will automatically capture the graph execution into a trace and log it to the active MLflow Experiment.
      1. Install the mlflow package
        ```shell
-        pip install mlflow
+         pip install mlflow
        ```
      2. Launch the MLflow server
        ```shell
-        mlflow ui
+         mlflow ui --host 0.0.0.0 --port 5000
+       ```
+       Note: MLflow UI is available at http://localhost:5000. To terminate the server, run the following command:
+       ```shell
+         ps -A | grep gunicorn
+         pkill -f gunicorn
        ```
      3. Run `tfsa_assistant_mlflow_test.py`:
        ```shell
-        python tfsa_assistant_mlflow_test.py
+         python tfsa_assistant_mlflow_test.py
        ```
        ![mlflow LangGraph Tracingl](screenshots/mlflow_langgraph_tracing.png "Example of mlflow Langgraph Tracing")
    - TFSA Chat APIs are integrated with MLflow, which can be viewed in the MLflow UI. We update Dockerfile to expose the MLflow UI.

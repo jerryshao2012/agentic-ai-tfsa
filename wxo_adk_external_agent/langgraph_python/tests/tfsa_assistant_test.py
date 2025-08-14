@@ -1,10 +1,4 @@
 # tfsa_assistant_test.py
-import sys
-import os
-
-# Add the parent directory to the path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 import logging
 
 from tfsa_assistant_graph import run_tfsa_assistant_sync

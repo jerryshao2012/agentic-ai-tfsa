@@ -1,11 +1,4 @@
 # app_test.py
-import sys
-import os
-
-# Add the parent directory to the path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-# app_test.py
 from fastapi.testclient import TestClient
 
 from app import app, logger
