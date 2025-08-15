@@ -34,6 +34,10 @@ It is recommended to implement your own authentication security measures to ensu
 
 ## Deployment Instructions
 
+Reserve the following resources: itz-watsonx-event-004 in https://techzone.ibm.com/
+- Dev/Test environment: https://techzone.ibm.com/collection/client-engineering-agentic-ai-labs/journey-devtest-environments
+- or Workshop environment: https://techzone.ibm.com/collection/client-engineering-agentic-ai-labs/journey-workshop-environments
+
 ### Step 1: Create a Code Engine Project
 
 1. **Using IBM Cloud Web UI:**
