@@ -11,7 +11,7 @@ For official watsonx Orchestrate Agent Development Kit (ADK) documentation, refe
 This TFSA implementation demonstrates how to deploy an external agent as a serverless application in IBM Cloud. The application leverages 
 [FastAPI](https://fastapi.tiangolo.com) and [LangGraph](https://www.langchain.com/langgraph) to create a chat completion service that integrates with Ollama, Deepseek, IBM watsonx and OpenAI models. It also includes AI tool for TFSA policy search using [Tavily API](https://www.tavily.com).
 
-The API is designed to be used with IBM watsonx Orchestrate, but can be used independently as well. It must have an [OpenAI-compatible Assistants API endpoint](https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/docs/). Endpoints **honour `X-IBM-THREAD-ID`** for multi-turn conversations, **stream via SSE** when `stream=true`. Both stream and non-stream must be implemented.
+The API is designed to be used with IBM watsonx Orchestrate, but can be used independently as well. It must have an [OpenAI-compatible Assistants API endpoint](https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/api/v1/docs/). Endpoints **honour `X-IBM-THREAD-ID`** for multi-turn conversations, **stream via SSE** when `stream=true`. Both stream and non-stream must be implemented.
 
 ## Features
 
@@ -95,7 +95,7 @@ It is recommended to implement your own authentication security measures to ensu
    - Choose **Test application** and click **Application URL**.
      - It is expected this page will not be found, we need to slightly update the path
      - Append `/docs` to the end of the URL path to view a formatted API page.
-       - Example: `https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/docs`
+       - Example: `https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/api/v1/chat/completions`
          - Test API:
            - Sync test
            ```shell
@@ -154,6 +154,7 @@ It is recommended to implement your own authentication security measures to ensu
        ![mlflow LangGraph Tracingl](screenshots/mlflow_langgraph_tracing.png "Example of mlflow Langgraph Tracing")
    - TFSA Chat APIs are integrated with MLflow, which can be viewed in the MLflow UI. We update Dockerfile to expose the MLflow UI.
      - Here is the URL for access:https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/
+     ![Example of mlflow Langgraph Tracing](screenshots/chat_mlflow_langgraph_tracing.png "Example of mlflow Langgraph Tracing")
      
 ### Step 2: Deploy tools linked with the External Agent
 

@@ -11,7 +11,7 @@ from tfsa_assistant_graph import cache
 
 
 @pytest.fixture(scope="module")
-def test_client():
+def tfsa_app_client():
     """
     A pytest fixture to set up the test client.
     This runs once per module, overriding the authentication dependency for all tests.
@@ -27,7 +27,7 @@ def test_client():
     app.dependency_overrides.clear()  # Clean up the override after tests are done
 
 
-def test_non_streaming_request(test_client):
+def test_non_streaming_request(tfsa_app_client):
     """Test a basic non-streaming chat completion request."""
     test_request = {
         "messages": [{"role": "user", "content": "What are the annual dollar limits for each year of TSFA?"}],
@@ -36,7 +36,7 @@ def test_non_streaming_request(test_client):
     headers = {"X-IBM-THREAD-ID": "test_thread_123"}
 
     logger.info("Testing non-streaming request...")
-    response = test_client.post("/api/v1/chat/completions", json=test_request, headers=headers)
+    response = tfsa_app_client.post("/api/v1/chat/completions", json=test_request, headers=headers)
 
     assert response.status_code == 200
     data = response.json()
@@ -46,7 +46,7 @@ def test_non_streaming_request(test_client):
     assert "content" in data["choices"][0]["message"]
 
 
-def test_streaming_request(test_client):
+def test_streaming_request(tfsa_app_client):
     """Test a streaming chat completion request."""
     test_request = {
         "messages": [{"role": "user", "content": "What is my contribution room?"}],
@@ -57,7 +57,7 @@ def test_streaming_request(test_client):
     logger.info("Testing streaming request...")
     reconstructed_message = ""
     full_stream_text = ""
-    with test_client.stream("POST", "/api/v1/chat/completions", json=test_request, headers=headers) as response:
+    with tfsa_app_client.stream("POST", "/api/v1/chat/completions", json=test_request, headers=headers) as response:
         assert response.status_code == 200
         logger.info("Receiving stream...")
         for line in response.iter_lines():
@@ -84,7 +84,7 @@ def test_streaming_request(test_client):
         logger.info("Streaming test successful!")
 
 
-def test_cached_response_and_streaming_simulation(test_client):
+def test_cached_response_and_streaming_simulation(tfsa_app_client):
     """Test that a cached response is served correctly and simulates streaming."""
     user_input = "What are the annual dollar limits for each year of TSFA?"
     test_request = {"messages": [{"role": "user", "content": user_input}]}
@@ -96,15 +96,15 @@ def test_cached_response_and_streaming_simulation(test_client):
 
     # Run a non-streaming request to populate the cache
     logger.info("Testing cached response: First request (populating cache)...")
-    response1 = test_client.post("/api/v1/chat/completions", json={**test_request, "stream": False}, headers=headers)
+    response1 = tfsa_app_client.post("/api/v1/chat/completions", json={**test_request, "stream": False}, headers=headers)
     assert response1.status_code == 200
     assert cache.contains(cache_hash)
 
     # Now, make a streaming request for the same content, which should hit the cache
     logger.info("Testing cached response: Second request (streaming from cache)...")
     streamed_content = ""
-    with test_client.stream("POST", "/api/v1/chat/completions", json={**test_request, "stream": True},
-                            headers=headers) as response2:
+    with tfsa_app_client.stream("POST", "/api/v1/chat/completions", json={**test_request, "stream": True},
+                                headers=headers) as response2:
         assert response2.status_code == 200
         # Verify that we receive a simulated stream by parsing the SSE events
         for line in response2.iter_lines():
