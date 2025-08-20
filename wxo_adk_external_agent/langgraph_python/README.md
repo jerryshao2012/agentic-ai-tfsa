@@ -48,13 +48,13 @@ Reserve the following resources: itz-watsonx-event-004 in https://techzone.ibm.c
    - Note: below are the commands to get the project name and resource group name
    ```shell
      export CE_REGION="us-south"
-     export IBMCLOUD_API_KEY="<your-api-key>"
+     export IBMCLOUD_API_KEY=$WATSONX_API_KEY
      ibmcloud login --apikey "$IBMCLOUD_API_KEY" -r "$CE_REGION"
      export CE_RESOURCE_GROUP="$(ibmcloud resource groups --output json | jq -r '.[].name' | grep '^itz-')"
-     echo $CE_RESOURCE_GROUP
+     echo "CE_RESOURCE_GROUP=$CE_RESOURCE_GROUP"
      ibmcloud target -g "$CE_RESOURCE_GROUP"
      export CE_PROJECT_ID="$(ibmcloud ce project list --output json | jq -r '.[].name')"
-     echo $CE_PROJECT_ID
+     echo "CE_PROJECT_ID=$CE_PROJECT_ID"
      ibmcloud ce project select -n $CE_PROJECT_ID
    ```
 
@@ -62,16 +62,6 @@ Reserve the following resources: itz-watsonx-event-004 in https://techzone.ibm.c
    - Select **Manage** from the title bar menu and go to **Access (IAM)**.
    - From the left navigation menu, select **API keys**.
    - Click **Create** and copy the new API key for use in the registry secret.
-   
-   - Or use command to create a registry secret (for container registry access) using:
-     ```shell
-       ibmcloud plugin update container-registry
-       ibmcloud ce registry create --name tfsa-agent-app-secret \
-        --server us.icr.io --username iamapikey --password $IBMCLOUD_API_KEY
-       export CONTAINER_NAMESPACE=$(ibmcloud cr namespaces --output json | jq -r '.[].name')
-       echo $CONTAINER_NAMESPACE 
-     ```
-     Replace <api-key> with your details (e.g., IBM Cloud Container Registry server like us.icr.io).
 
 3. **Create the Code Engine Application:**
    - Click the **Create** button to start creating an application.
@@ -86,6 +76,16 @@ Reserve the following resources: itz-watsonx-event-004 in https://techzone.ibm.c
        - **Dockerfile:** Dockerfile (leave default)
        - Click **Next**
        - Under **Registry secret**, create a secret (if one doesn't exist) using the **API Key** created above
+         - Or use command to create a registry secret (for container registry access) using:
+         ```shell
+            ibmcloud plugin update container-registry
+            ibmcloud ce registry create --name tfsa-agent-app-secret \
+              --server us.icr.io --username iamapikey --password $IBMCLOUD_API_KEY
+            export CONTAINER_NAMESPACE=$(ibmcloud cr namespaces --output json | jq -r '.[].name')
+            echo "CONTAINER_NAMESPACE=$CONTAINER_NAMESPACE"
+         ```
+         Replace <api-key> with your details (e.g., IBM Cloud Container Registry server like us.icr.io).
+
      - **Application name:** Any name, for instance `wxo-agent-tfsa-app1`
      - **Domain mappings:** Public 
      Note: if you get an error "Failed to create namespace: You are not authorized to access the IBM Container Registry in this account", try `podman` command to build image locally and then push to repository. Thanks [@Chung Zheng](mailto:Chung.Zheng@ibm.com) provided the solution.
@@ -106,15 +106,15 @@ Reserve the following resources: itz-watsonx-event-004 in https://techzone.ibm.c
      - Here is the command to create the application:
      ```shell
         ibmcloud ce application create --name wxo-agent-tfsa-app1 \
-         --image private.us.icr.io/cr-itz-4yv6abja/tfsa-agent-app \
-         --registry-secret tfsa-agent-app-secret \
-         --env LOGGING_LEVEL=DEBUG \
-         --env AI_SERVICES_PROVIDER=watsonxai \
-         --env TAVILY_API_KEY=$TAVILY_API_KEY \
-         --env WATSONX_API_KEY=$WATSONX_API_KEY \
-         --env WATSONX_URL=$WATSONX_URL \
-         --visibility public \
-         --port 8080
+          --image private.us.icr.io/cr-itz-4yv6abja/tfsa-agent-app \
+          --registry-secret tfsa-agent-app-secret \
+          --env LOGGING_LEVEL=DEBUG \
+          --env AI_SERVICES_PROVIDER=watsonxai \
+          --env TAVILY_API_KEY=$TAVILY_API_KEY \
+          --env WATSONX_API_KEY=$WATSONX_API_KEY \
+          --env WATSONX_URL=$WATSONX_URL \
+          --visibility public \
+          --port 8080
      ```
 
 4. **Set Environment Variables:**
@@ -128,6 +128,27 @@ Reserve the following resources: itz-watsonx-event-004 in https://techzone.ibm.c
      - `DEEPSEEK_API_KEY` (only needed if you plan to use deepseek models)
      - `OPENAI_API_KEY` (only needed if you plan to use OpenAI models)
    - Select the `Create` button
+   - Note:
+     - Wait for deployment to complete (it may take a few minutes):
+     ```shell
+        # Check deployment status
+        ibmcloud ce application events --name wxo-agent-tfsa-app1
+    
+        # Or watch the status until it's ready
+        watch -n 5 'ibmcloud ce application get --name wxo-agent-tfsa-app1 | grep "Status"'
+     ```
+     - Check application details:
+     ```shell
+        ibmcloud ce application get --name wxo-agent-tfsa-app1
+     ```
+     - View application logs:
+     ```shell
+        ibmcloud ce application logs --name wxo-agent-tfsa-app1
+     ```
+     - Update your application:
+     ```shell
+        ibmcloud ce application update --name wxo-agent-tfsa-app1 --env NEW_VARIABLE=value
+     ```
 
 5. **Test the Application:**
    - Choose **Test application** and click **Application URL**.
@@ -136,14 +157,14 @@ Reserve the following resources: itz-watsonx-event-004 in https://techzone.ibm.c
        - Get public access url:
          ```shell
            export PUBLIC_URL="$(ibmcloud ce application get --name wxo-agent-tfsa-app1 --output url)"
-           echo $PUBLIC_URL
+           echo "PUBLIC_URL=$PUBLIC_URL"
          ``` 
        - Example: `https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/api/v1/chat/completions`
          - Test API:
            - Sync test
            ```shell
             curl -X 'POST' \
-              $PUBLIC_URL/api/v1/chat/completions \
+              "$PUBLIC_URL/api/v1/chat/completions" \
               -H 'accept: application/json' \
               -H 'Authorization: Bearer xxx' \
               -H 'Content-Type: application/json' \
@@ -161,7 +182,7 @@ Reserve the following resources: itz-watsonx-event-004 in https://techzone.ibm.c
            - Streaming test
            ```shell
              curl -X 'POST' \
-              $PUBLIC_URL/api/v1/chat/completions \
+              "$PUBLIC_URL/api/v1/chat/completions" \
               -H 'accept: application/json' \
               -H 'Authorization: Bearer xxx' \
               -H 'Content-Type: application/json' \
