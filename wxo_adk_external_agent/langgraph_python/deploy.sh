@@ -14,6 +14,7 @@ readonly DEPLOYMENT_CHECK_INTERVAL=5   # Check every 5 seconds
 
 # Global variables
 DRY_RUN=false
+SHOW_HELP=false
 MAX_DEPLOYMENT_WAIT_TIME=$DEFAULT_MAX_DEPLOYMENT_WAIT_TIME
 
 # ANSI color codes
@@ -455,15 +456,18 @@ setup_orchestrate() {
       if orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME"; then
           log_info "Environment already exists, activating and updating API key..."
           if ! execute orchestrate env activate "$ORCHESTRATE_ENV_NAME" --api-key "$WATSONX_API_KEY"; then
-              log_info "Warning: Failed to activate environment"
+              log_error "Failed to activate environment. Try: orchestrate env activate $ORCHESTRATE_ENV_NAME --api-key <api_key>"
+              exit 1
           fi
       else
           log_info "Creating new environment..."
           if [[ -z "${WO_INSTANCE:-}" ]]; then
-              log_info "Warning: WO_INSTANCE not set, skipping environment creation"
+              log_error "WO_INSTANCE not set, cannot create environment"
+              exit 1
           else
               if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --activate; then
-                  log_info "Warning: Failed to create environment"
+                  log_error "Failed to create environment"
+                  exit 1
               fi
           fi
       fi
@@ -472,13 +476,28 @@ setup_orchestrate() {
       if orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME"; then
           log_info "Importing external agents..."
           if ! execute orchestrate agents import -f agents/tfsa_langgraph_external_agent.yaml; then
-              log_info "Warning: Failed to import tfsa_langgraph_external_agent.yaml"
+              # Check if this is a token expiration issue
+              if orchestrate agents import -f agents/tfsa_langgraph_external_agent.yaml 2>&1 | grep -q "token.*missing or expired"; then
+                  log_error "The token found for environment '$ORCHESTRATE_ENV_NAME' is missing or expired. Use: orchestrate env activate $ORCHESTRATE_ENV_NAME --api-key <api_key>"
+                  exit 1
+              else
+                  log_error "Failed to import tfsa_langgraph_external_agent.yaml"
+                  exit 1
+              fi
           fi
           if ! execute orchestrate agents import -f agents/connection_with_tfsa_external_agent.yaml; then
-              log_info "Warning: Failed to import connection_with_tfsa_external_agent.yaml"
+              # Check if this is a token expiration issue
+              if orchestrate agents import -f agents/connection_with_tfsa_external_agent.yaml 2>&1 | grep -q "token.*missing or expired"; then
+                  log_error "The token found for environment '$ORCHESTRATE_ENV_NAME' is missing or expired. Use: orchestrate env activate $ORCHESTRATE_ENV_NAME --api-key <api_key>"
+                  exit 1
+              else
+                  log_error "Failed to import connection_with_tfsa_external_agent.yaml"
+                  exit 1
+              fi
           fi
       else
-          log_info "Skipping agent import - $ORCHESTRATE_ENV_NAME environment not available"
+          log_error "Environment $ORCHESTRATE_ENV_NAME not available after setup"
+          exit 1
       fi
 
       # List environments for verification
@@ -585,7 +604,7 @@ cleanup_resources() {
       echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would delete container image: $CONTAINER_NAMESPACE/$IMAGE_NAME"
     else
       if ibmcloud cr image-list --restrict "$CONTAINER_NAMESPACE/$IMAGE_NAME" | grep -q "latest"; then
-        if ! execute ibmcloud cr image-rm "$CONTAINER_NAMESPACE/$IMAGE_NAME:latest" --quiet; then
+        if ! execute ibmcloud cr image-rm "$CONTAINER_NAMESPACE/$IMAGE_NAME:latest" --force --quiet; then
             log_warn "Failed to delete container image: $CONTAINER_NAMESPACE/$IMAGE_NAME:latest"
         else
             log_info "Successfully deleted container image: $CONTAINER_NAMESPACE/$IMAGE_NAME:latest"
@@ -603,7 +622,7 @@ cleanup_resources() {
   else
     if command -v orchestrate &>/dev/null; then
       if orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME"; then
-        if ! execute orchestrate env delete -n "$ORCHESTRATE_ENV_NAME" --force; then
+        if ! execute orchestrate env remove -n "$ORCHESTRATE_ENV_NAME" --force; then
             log_warn "Failed to delete Orchestrate environment: $ORCHESTRATE_ENV_NAME"
         else
             log_info "Successfully deleted Orchestrate environment: $ORCHESTRATE_ENV_NAME"
@@ -632,6 +651,9 @@ run_all() {
      setup_orchestrate
      log_info "=== Full Deployment Complete ==="
  }
+
+# Global array for arguments that are not options
+REMAINING_ARGS=()
 
 show_help() {
     cat << EOF
@@ -672,12 +694,12 @@ EOF
 }
 
 parse_args() {
-    local args=()
+    REMAINING_ARGS=() # Reset the array for each parse
     while [[ $# -gt 0 ]]; do
         case $1 in
             -h|--help)
-                show_help
-                exit 0
+                SHOW_HELP=true
+                shift # Consume the option
                 ;;
             --dry-run)
                 DRY_RUN=true
@@ -693,24 +715,27 @@ parse_args() {
                 fi
                 ;;
             *)
-                args+=("$1")
-                shift
+                REMAINING_ARGS+=("$1") # Add to remaining args
+                shift # Consume the argument
                 ;;
         esac
     done
-    echo "${args[@]}"
 }
 
 main() {
     check_requirements
 
     # Parse command line arguments
-    local remaining_args
-    remaining_args=$(parse_args "$@")
+    parse_args "$@"
 
-    # Convert to array and set positional parameters
-    if [[ -n "$remaining_args" ]]; then
-        set -- $remaining_args
+    if [[ "$SHOW_HELP" == true ]]; then
+        show_help
+        exit 0
+    fi
+
+    # Set positional parameters to the remaining arguments
+    if [[ ${#REMAINING_ARGS[@]} -gt 0 ]]; then
+        set -- "${REMAINING_ARGS[@]}"
     else
         set --
     fi
