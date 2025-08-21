@@ -476,25 +476,26 @@ setup_orchestrate() {
       if orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME"; then
           log_info "Importing external agents..."
           if ! execute orchestrate agents import -f agents/tfsa_langgraph_external_agent.yaml; then
-              # Check if this is a token expiration issue
-              if orchestrate agents import -f agents/tfsa_langgraph_external_agent.yaml 2>&1 | grep -q "token.*missing or expired"; then
-                  log_error "The token found for environment '$ORCHESTRATE_ENV_NAME' is missing or expired. Use: orchestrate env activate $ORCHESTRATE_ENV_NAME --api-key <api_key>"
-                  exit 1
-              else
-                  log_error "Failed to import tfsa_langgraph_external_agent.yaml"
-                  exit 1
-              fi
+              log_error "Failed to import tfsa_langgraph_external_agent.yaml"
+              exit 1
           fi
           if ! execute orchestrate agents import -f agents/connection_with_tfsa_external_agent.yaml; then
-              # Check if this is a token expiration issue
-              if orchestrate agents import -f agents/connection_with_tfsa_external_agent.yaml 2>&1 | grep -q "token.*missing or expired"; then
-                  log_error "The token found for environment '$ORCHESTRATE_ENV_NAME' is missing or expired. Use: orchestrate env activate $ORCHESTRATE_ENV_NAME --api-key <api_key>"
-                  exit 1
-              else
-                  log_error "Failed to import connection_with_tfsa_external_agent.yaml"
-                  exit 1
-              fi
+            log_error "Failed to import connection_with_tfsa_external_agent.yaml"
+            exit 1
           fi
+
+          # Extract agent names from YAML files for deployment
+          local TFSA_AGENT_NAME
+          TFSA_AGENT_NAME=$(grep '^name:' agents/tfsa_langgraph_external_agent.yaml | head -1 | awk '{print $2}' | tr -d '"'"'")
+          local CONNECTION_AGENT_NAME
+          CONNECTION_AGENT_NAME=$(grep '^name:' agents/connection_with_tfsa_external_agent.yaml | head -1 | awk '{print $2}' | tr -d '"'"'")
+          # Make agents available in watsonx Orchestrate UI
+          log_info "Making agents available in watsonx Orchestrate UI..."
+          log_info "Agent '$TFSA_AGENT_NAME' and '$CONNECTION_AGENT_NAME' have been imported."
+          log_info "To make them available in the chat UI, you may need to:"
+          log_info "1. Log in to your watsonx.Orchestrate instance"
+          log_info "2. Navigate to the chat UI section, manage agents"
+          log_info "3. Ensure the agents are tested and deployed for use in the chat interface"
       else
           log_error "Environment $ORCHESTRATE_ENV_NAME not available after setup"
           exit 1
