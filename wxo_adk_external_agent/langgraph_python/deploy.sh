@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail  # Exit on error, undefined variables, pipe failure
 set +x  # Avoid Printing Secrets
-
 # Configuration
-readonly BUILD_DIR="langgraph_python"
 readonly CE_REGION="us-south"
 readonly CE_PROJECT_NAME="tfsa-agent-app-project"
 readonly IMAGE_NAME="tfsa-agent-app-image"
@@ -11,6 +9,10 @@ readonly REGISTRY_SECRET_NAME="tfsa-agent-app-secret"
 readonly ORCHESTRATE_ENV_NAME="tfsa-agent-app-orchestrate-env"
 readonly DEFAULT_MAX_DEPLOYMENT_WAIT_TIME=300  # 5 minutes in seconds
 readonly DEPLOYMENT_CHECK_INTERVAL=5   # Check every 5 seconds
+
+# Get the directory where the script is located to make it runnable from anywhere
+readonly SCRIPT_DIR
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 # Global variables
 DRY_RUN=false
@@ -57,13 +59,13 @@ check_requirements() {
       fi
   }
 
-  required_commands=("ibmcloud" "jq" "curl" "brew")
+  required_commands=("ibmcloud" "jq" "curl" "brew" "yq")
   for cmd in "${required_commands[@]}"; do
       check_command "$cmd"
   done
 
   # Load environment variables
-  ENV_FILE="../.env"
+  ENV_FILE="${SCRIPT_DIR}/../.env"
   if [[ -f "$ENV_FILE" ]]; then
       log_info "Loading environment variables from $ENV_FILE"
       # shellcheck source=../.env
@@ -249,40 +251,12 @@ build_and_push_image() {
       exit 1
   fi
 
-  # Check for and navigate to the build directory
-  CURRENT_DIR=$(basename "$PWD")
-  ORIGINAL_DIR="$PWD"
-
-  if [[ "$CURRENT_DIR" == "$BUILD_DIR" ]]; then
-      log_info "Already in $BUILD_DIR directory, building from current location..."
-  elif [[ -d "$BUILD_DIR" ]]; then
-      log_info "Building from $BUILD_DIR directory..."
-      if [[ "$DRY_RUN" == false ]]; then
-        cd "$BUILD_DIR"
-      else
-        echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would change to $BUILD_DIR directory"
-      fi
-  else
-      log_info "Warning: $BUILD_DIR directory not found, building from current directory ($CURRENT_DIR)"
-      # Check if essential build files exist in current directory
-      if [[ ! -f "Dockerfile" ]] && [[ ! -f "requirements.txt" ]]; then
-          log_error "No build files (Dockerfile, or requirements.txt) found in current directory"
-          exit 1
-      fi
-  fi
-
   # Build, tag, and push container
-  log_info "Building container image..."
-  if ! execute podman build . -t "$IMAGE_NAME" --platform linux/amd64 --pull-always; then
+  log_info "Building container image from context: ${SCRIPT_DIR}"
+  # The build context is the script's directory, where the Dockerfile is expected to be.
+  if ! execute podman build "${SCRIPT_DIR}" -t "$IMAGE_NAME" --platform linux/amd64 --pull-always; then
       log_error "Failed to build container image"
       exit 1
-  fi
-
-  # Return to original directory if we changed
-  if [[ "$PWD" != "$ORIGINAL_DIR" ]] && [[ "$DRY_RUN" == false ]]; then
-      cd "$ORIGINAL_DIR"
-  elif [[ "$DRY_RUN" == true ]] && [[ "$CURRENT_DIR" != "$BUILD_DIR" ]] && [[ -d "$BUILD_DIR" ]]; then
-      echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would return to original directory"
   fi
 
   log_info "Tagging image for registry..."
@@ -474,21 +448,21 @@ setup_orchestrate() {
 
       # Import agents if environment is available
       if orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME"; then
-          log_info "Importing external agents..."
-          if ! execute orchestrate agents import -f agents/tfsa_langgraph_external_agent.yaml; then
+          log_info "Importing external agents from ${SCRIPT_DIR}/../agents/"
+          if ! execute orchestrate agents import -f "${SCRIPT_DIR}/../agents/tfsa_langgraph_external_agent.yaml"; then
               log_error "Failed to import tfsa_langgraph_external_agent.yaml"
               exit 1
           fi
-          if ! execute orchestrate agents import -f agents/connection_with_tfsa_external_agent.yaml; then
+          if ! execute orchestrate agents import -f "${SCRIPT_DIR}/../agents/connection_with_tfsa_external_agent.yaml"; then
             log_error "Failed to import connection_with_tfsa_external_agent.yaml"
             exit 1
           fi
 
           # Extract agent names from YAML files for deployment
           local TFSA_AGENT_NAME
-          TFSA_AGENT_NAME=$(grep '^name:' agents/tfsa_langgraph_external_agent.yaml | head -1 | awk '{print $2}' | tr -d '"'"'")
+          TFSA_AGENT_NAME=$(yq -r '.name' "${SCRIPT_DIR}/../agents/tfsa_langgraph_external_agent.yaml")
           local CONNECTION_AGENT_NAME
-          CONNECTION_AGENT_NAME=$(grep '^name:' agents/connection_with_tfsa_external_agent.yaml | head -1 | awk '{print $2}' | tr -d '"'"'")
+          CONNECTION_AGENT_NAME=$(yq -r '.name' "${SCRIPT_DIR}/../agents/connection_with_tfsa_external_agent.yaml")
           # Make agents available in watsonx Orchestrate UI
           log_info "Making agents available in watsonx Orchestrate UI..."
           log_info "Agent '$TFSA_AGENT_NAME' and '$CONNECTION_AGENT_NAME' have been imported."
