@@ -38,7 +38,65 @@ Reserve the following resources: itz-watsonx-event-004 in https://techzone.ibm.c
 - Dev/Test environment: https://techzone.ibm.com/collection/client-engineering-agentic-ai-labs/journey-devtest-environments
 - or Workshop environment: https://techzone.ibm.com/collection/client-engineering-agentic-ai-labs/journey-workshop-environments
 
-### Step 1: Create a Code Engine Project
+### Automated Deployment with deploy.sh
+We provide a deployment script `deploy.sh` that automates the entire deployment process. The script handles authentication, resource setup, container image building, application deployment, and testing.
+
+### Prerequisites
+* IBM Cloud CLI installed and configured
+* Required tools: `jq`, `curl`, `podman` (or `docker`), `yq`
+* Environment variables set in `.env` file (see example below)
+
+#### Environment Setup
+Create a `.env` file with required variables:
+```shell
+LOGGING_LEVEL=DEBUG
+
+AI_SERVICES_PROVIDER=watsonxai
+DEEPSEEK_API_KEY=<deepseek_api_key>
+
+WO_DEVELOPER_EDITION_SOURCE=orchestrate
+WO_INSTANCE=<service_instance_url>
+WD_API_KEY=<wxo_api_key>
+
+WATSONX_URL=https://us-south.ml.cloud.ibm.com
+WATSONX_API_KEY=<watsonx_api_key>
+WATSONX_PROJECT_ID=<watsonx_project_id>
+WATSONX_SPACE_ID=<watsonx_space_id>
+
+OPENAI_API_KEY=<wxo_api_key>
+
+TAVILY_API_KEY=<tavily_api_key>
+```
+
+#### Deployment
+1. Make the script executable:
+```shell
+chmod +x deploy.sh
+```
+2. Run full deployment:
+```shell
+./deploy.sh
+```
+3. For dry-run (simulation only):
+```shell
+./deploy.sh --dry-run
+```
+4. Run specific functions individually:
+```shell
+./deploy.sh authenticate_to_ibmcloud
+./deploy.sh setup_resource_group
+./deploy.sh build_and_push_image
+./deploy.sh deploy_application
+./deploy.sh test_endpoints
+./deploy.sh setup_orchestrate
+```
+5. Clean up resources:
+```shell
+./deploy.sh cleanup_resources
+```
+
+### Manual Deployment
+#### Step 1: Create a Code Engine Project
 
 1. **Using IBM Cloud Web UI:**
    - Navigate to [IBM Cloud Code Engine Projects](https://cloud.ibm.com/containers/serverless/projects) and select **Create**. Name your project, for instance `wxo-agent-app-test1`.
@@ -47,15 +105,15 @@ Reserve the following resources: itz-watsonx-event-004 in https://techzone.ibm.c
    
    - Note: below are the commands to get the project name and resource group name
    ```shell
-     export CE_REGION="us-south"
-     export IBMCLOUD_API_KEY=$WATSONX_API_KEY
-     ibmcloud login --apikey "$IBMCLOUD_API_KEY" -r "$CE_REGION"
-     export CE_RESOURCE_GROUP="$(ibmcloud resource groups --output json | jq -r '.[].name' | grep '^itz-')"
-     echo "CE_RESOURCE_GROUP=$CE_RESOURCE_GROUP"
-     ibmcloud target -g "$CE_RESOURCE_GROUP"
-     export CE_PROJECT_ID="$(ibmcloud ce project list --output json | jq -r '.[].name')"
-     echo "CE_PROJECT_ID=$CE_PROJECT_ID"
-     ibmcloud ce project select -n $CE_PROJECT_ID
+      export CE_REGION="us-south"
+      export IBMCLOUD_API_KEY=$WATSONX_API_KEY
+      ibmcloud login --apikey "$IBMCLOUD_API_KEY" -r "$CE_REGION"
+      export CE_RESOURCE_GROUP="$(ibmcloud resource groups --output json | jq -r '.[].name' | grep '^itz-')"
+      echo "CE_RESOURCE_GROUP=$CE_RESOURCE_GROUP"
+      ibmcloud target -g "$CE_RESOURCE_GROUP"
+      export CE_PROJECT_ID="$(ibmcloud ce project list --output json | jq -r '.[].name')"
+      echo "CE_PROJECT_ID=$CE_PROJECT_ID"
+      ibmcloud ce project select -n $CE_PROJECT_ID
    ```
 
 2. **Create an API Key for Registry Secret:**
@@ -156,14 +214,14 @@ Reserve the following resources: itz-watsonx-event-004 in https://techzone.ibm.c
      - Append `/docs` to the end of the URL path to view a formatted API page.
        - Get public access url:
          ```shell
-           export PUBLIC_URL="$(ibmcloud ce application get --name wxo-agent-tfsa-app1 --output url)"
-           echo "PUBLIC_URL=$PUBLIC_URL"
+            export PUBLIC_URL="$(ibmcloud ce application get --name wxo-agent-tfsa-app1 --output url)"
+            echo "PUBLIC_URL=$PUBLIC_URL"
          ``` 
        - Example: `https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/api/v1/chat/completions`
          - Test API:
            - Sync test
            ```shell
-            curl -X 'POST' \
+             curl -X 'POST' \
               "$PUBLIC_URL/api/v1/chat/completions" \
               -H 'accept: application/json' \
               -H 'Authorization: Bearer xxx' \
@@ -200,27 +258,27 @@ Reserve the following resources: itz-watsonx-event-004 in https://techzone.ibm.c
    - [MLflow Tracing](https://mlflow.org/docs/latest/genai/tracing/) provides automatic tracing capability for LangGraph, as a extension of its LangChain integration. By enabling auto-tracing for LangChain by calling the `mlflow.langchain.autolog()` function, MLflow will automatically capture the graph execution into a trace and log it to the active MLflow Experiment.
      1. Install the mlflow package
        ```shell
-         pip install mlflow
+          pip install mlflow
        ```
      2. Launch the MLflow server
        ```shell
-         mlflow ui --host 0.0.0.0 --port 5000
+          mlflow ui --host 0.0.0.0 --port 5000
        ```
        Note: MLflow UI is available at http://localhost:5000. To terminate the server, run the following command:
        ```shell
-         ps -A | grep gunicorn
-         pkill -f gunicorn
+          ps -A | grep gunicorn
+          pkill -f gunicorn
        ```
      3. Run `tfsa_assistant_mlflow_test.py`:
        ```shell
-         python tfsa_assistant_mlflow_test.py
+          python tfsa_assistant_mlflow_test.py
        ```
        ![mlflow LangGraph Tracingl](screenshots/mlflow_langgraph_tracing.png "Example of mlflow Langgraph Tracing")
    - TFSA Chat APIs are integrated with MLflow, which can be viewed in the MLflow UI. We update Dockerfile to expose the MLflow UI.
      - Here is the URL for access:https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/
      ![Example of mlflow Langgraph Tracing](screenshots/chat_mlflow_langgraph_tracing.png "Example of mlflow Langgraph Tracing")
      
-### Step 2: Deploy tools linked with the External Agent
+#### Step 2: Deploy tools linked with the External Agent
 
 1. Import external agents
 Update `api_url` as needed in `tfsa_langgraph_external_agent.yaml`.
@@ -239,7 +297,7 @@ orchestrate agents import -f connection_with_tfsa_external_agent.yaml
 
 3. Deploy agents in watsonx Orchestrate UI
 
-### Step 3: Call the new External Agent from Orchestrate
+#### Step 3: Call the new External Agent from Orchestrate
 
 1. **In IBM watsonx orchestrate Web UI:**
    - From the top left hamburger menu, select **Chat** from the left-hand navigation.
