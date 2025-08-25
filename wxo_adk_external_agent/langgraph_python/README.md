@@ -100,7 +100,7 @@ chmod +x deploy.sh
 
 1. **Using IBM Cloud Web UI:**
    - Navigate to [IBM Cloud Code Engine Projects](https://cloud.ibm.com/containers/serverless/projects) and select **Create**. Name your project, for instance `wxo-agent-app-test1`.
-   - Or if project is created, copt the project name `ce-itz-wxo-688a2b3ac1fc751be4edfa`
+   - Or if project is created, copy the project name `ce-itz-wxo-688a2b3ac1fc751be4edfa`
    - Select the agent you created (`ce-itz-wxo-688a2b3ac1fc751be4edfa`) and choose the **Application** menu item from the left navigation panel.
    
    - Note: below are the commands to get the project name and resource group name
@@ -120,10 +120,17 @@ chmod +x deploy.sh
    - Select **Manage** from the title bar menu and go to **Access (IAM)**.
    - From the left navigation menu, select **API keys**.
    - Click **Create** and copy the new API key for use in the registry secret.
+   ```shell
+      # Here are equvalent commands
+      ibmcloud ce registry create --name tfsa-agent-app-secret \
+        --server us.icr.io --username iamapikey --password $IBMCLOUD_API_KEY
+      export CONTAINER_NAMESPACE=$(ibmcloud cr namespaces --output json | jq -r '.[].name')
+      echo "CONTAINER_NAMESPACE=$CONTAINER_NAMESPACE"
+   ```
 
 3. **Create the Code Engine Application:**
-   - Click the **Create** button to start creating an application.
-   - Create from source code
+   - Deploy from source code
+     - Click the **Create** button to start creating an application.
      - Under **Code**, select **Build container image from source code**.
      - In the **Code repo URL** field, enter `https://github.com/jerryshao2012/agentic-ai-tfsa`.
      - Click **Specify build details**:
@@ -153,12 +160,14 @@ chmod +x deploy.sh
         podman machine start
         # Use #username iamapikey, #pwd <WATSONX_API_KEY> to login
         podman login us.icr.io
+        # Build and Push Container Image
         cd wxo_adk_external_agent/langgraph_python
+        podman machine start
         podman build . -t tfsa-agent-app --platform linux/amd64
         podman tag localhost/tfsa-agent-app us.icr.io/$CONTAINER_NAMESPACE/tfsa-agent-app:latest
         podman push us.icr.io/$CONTAINER_NAMESPACE/tfsa-agent-app:latest
      ```
-   - Create from image
+   - Deploy from image
      - Under **Code**, select **Use an existing container image**.
      - In the **Image reference** field, enter `private.us.icr.io/cr-itz-4yv6abja/tfsa-agent-app`.
      - Here is the command to create the application:
@@ -288,7 +297,7 @@ orchestrate env activate watsonx-challenge --api-key <api_key>
 orchestrate agents import -f tfsa_langgraph_external_agent.yaml
 ```
 
-2. Import agents 
+2. Import native agents 
 
 This native agent is used to route the question to the external agent. Only native agents can be listed in watsonx Orchestrate chat UI aoo. 
 ```shell
