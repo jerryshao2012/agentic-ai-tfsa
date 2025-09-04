@@ -21,7 +21,7 @@ The system uses an MCP (Modular, Composable, Pluggable) architecture with:
 - Uses LangGraph for workflow management
 - Visualizes workflow as Mermaid diagram
 
-![TSFA Agentic Flow](tfsa_graph.png)
+![TFSA Agentic Flow](tfsa_graph.png)
 
 **Dependencies**:
 - `langchain`, `langgraph`, `dotenv`
@@ -138,7 +138,7 @@ pip install "mcp[cli]"
 mcp run tfsa_mcp_server.py
 mcp dev tfsa_mcp_server.py
 # This command not install server well. Need to manually update configuration file claude_desktop_config.json
-mcp install /PATH_TO_PROJECT/tsfa/tfsa_mcp_server.py --name "TFSA Assistant" -f /Users/jerryshao/Documents/docs/Software/AI/structured-language-extraction/.env
+mcp install /PATH_TO_PROJECT/tfsa_mcp_server.py --name "TFSA Assistant" -f /PATH_TO_PROJECT/.env
 ```
 claude_desktop_config.json
 ```json
@@ -148,7 +148,7 @@ claude_desktop_config.json
       "command": "uv",
       "args": [
           "--directory",
-          "/PATH_TO_PROJECT/tsfa",
+          "/PATH_TO_PROJECT",
           "run",
           "tfsa_mcp_server.py"
       ],
@@ -167,7 +167,7 @@ claude_desktop_config.json
       "command": "uv",
       "args": [
           "--directory",
-          "/PATH_TO_PROJECT/tsfa",
+          "/PATH_TO_PROJECT",
           "run",
           "e_transfer_mcp_server.py"
       ],
