@@ -179,11 +179,18 @@ chmod +x deploy.sh
         ibmcloud ce application create --name wxo-agent-tfsa-app1 \
           --image private.us.icr.io/cr-itz-4yv6abja/tfsa-agent-app \
           --registry-secret tfsa-agent-app-secret \
-          --env LOGGING_LEVEL=DEBUG \
-          --env AI_SERVICES_PROVIDER=watsonxai \
-          --env TAVILY_API_KEY=$TAVILY_API_KEY \
-          --env WATSONX_API_KEY=$WATSONX_API_KEY \
-          --env WATSONX_URL=$WATSONX_URL \
+          --env LOGGING_LEVEL="$LOGGING_LEVEL" \
+          --env AI_SERVICES_PROVIDER="$AI_SERVICES_PROVIDER" \
+          --env DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+          --env WO_DEVELOPER_EDITION_SOURCE="orchestrate" \
+          --env WO_INSTANCE="$WO_INSTANCE" \
+          --env WD_API_KEY="$WDS_API_KEY" \
+          --env WATSONX_URL="$WATSONX_URL" \
+          --env WATSONX_API_KEY="$WATSONX_API_KEY" \
+          --env WATSONX_PROJECT_ID="$WATSONX_PROJECT_ID" \
+          --env WATSONX_SECRET_ID="$WATSONX_SECRET_ID" \
+          --env OPENAI_API_KEY="$OPENAI_API_KEY" \
+          --env TAVILY_API_KEY="$TAVILY_API_KEY" \
           --visibility public \
           --port 8080
      ```
