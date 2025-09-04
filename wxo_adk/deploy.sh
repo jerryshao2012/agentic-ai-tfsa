@@ -70,6 +70,13 @@ check_requirements() {
 
 setup_environment() {
     log_info "Setting up Orchestrate environment: '$ORCHESTRATE_ENV_NAME'..."
+
+    # Ensure WO_INSTANCE is available, as this function depends on it.
+    if [[ -z "${WO_INSTANCE:-}" ]]; then
+        log_error "WO_INSTANCE is not set. Please ensure it is in your .env file."
+        exit 1
+    fi
+
     # Check if environment already exists
     if [[ "$DRY_RUN" == true ]]; then
         log_info "[DRY-RUN] Would check if environment '$ORCHESTRATE_ENV_NAME' exists."
@@ -151,29 +158,83 @@ import_agents() {
     log_info "Agent import process complete."
 }
 
+cleanup_resources() {
+    log_info "=== Cleaning up Orchestrate Resources ==="
+    # Ensure the environment is active to issue 'agents remove' commands
+    setup_environment
+
+    local agents_dir="${SCRIPT_DIR}/agents"
+    local agents_to_remove=(
+        "tfsa_orchestrator_agent.yaml"
+        "tfsa_transaction_agent.yaml"
+        "tfsa_calculation_agent.yaml"
+        "tfsa_policy_agent.yaml"
+    )
+
+    log_info "Removing agents..."
+    for agent_file in "${agents_to_remove[@]}"; do
+        local agent_path="${agents_dir}/${agent_file}"
+        if [[ -f "$agent_path" ]]; then
+            # Extract name and kind from the YAML file using grep and sed for portability
+            local agent_name
+            agent_name=$(grep -E '^\s*name:' "$agent_path" | sed -e 's/^\s*name:\s*//' -e 's/"//g' -e "s/'//g" | tr -d '[:space:]')
+            local agent_kind
+            agent_kind=$(grep -E '^\s*kind:' "$agent_path" | sed -e 's/^\s*kind:\s*//' -e 's/"//g' -e "s/'//g" | tr -d '[:space:]')
+
+            if [[ -n "$agent_name" && -n "$agent_kind" ]]; then
+                log_info "Removing agent: '$agent_name' (kind: $agent_kind)"
+                if ! execute orchestrate agents remove --name "$agent_name" --kind "$agent_kind" --force; then
+                    log_warn "Could not remove agent '$agent_name'. It might not exist or an error occurred."
+                fi
+            else
+                log_warn "Could not determine name and kind for agent in '$agent_file'. Skipping."
+            fi
+        else
+            log_warn "Agent file not found, skipping: $agent_path"
+        fi
+    done
+
+    log_info "Skipping tool removal. Please remove tools manually if needed (e.g., 'orchestrate tools remove -n search_cra_tfsa_policy')."
+    log_info "The environment '$ORCHESTRATE_ENV_NAME' was NOT removed. You can remove it manually with:"
+    log_info "orchestrate env remove -n '$ORCHESTRATE_ENV_NAME' --force"
+    log_info "=== Cleanup Complete ==="
+}
+
 run_all() {
     log_info "=== Starting Orchestrate Setup ==="
     setup_environment
     import_tools
     import_agents
     log_info "=== Orchestrate Setup Complete ==="
+    log_info "Agents and tools have been imported. Please go to the watsonx Orchestrate UI to deploy and test them."
 }
 
 # --- Argument Parsing and Main Execution ---
 show_help() {
     cat << EOF
-Usage: $0 [OPTION]
+Usage: $0 [OPTION] [FUNCTION]
 
 Sets up the watsonx.Orchestrate environment by creating/activating the environment
 and importing the necessary tools and agents.
 
 OPTIONS:
-    -h, --help      Show this help message and exit
-    --dry-run       Simulate actions without executing them
+    -h, --help          Show this help message and exit
+    --dry-run           Simulate actions without executing them
+
+FUNCTIONS:
+    run_all             (default) Runs all setup steps: setup_environment, import_tools, import_agents.
+    setup_environment   Creates or activates the Orchestrate environment.
+    import_tools        Imports tools from the 'tools' directory.
+    import_agents       Imports agents from the 'agents' directory.
+    cleanup_resources   Removes imported agents.
+
+If no function is specified, 'run_all' is executed.
 EOF
 }
 
 main() {
+    local func_to_run="run_all"
+
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -186,9 +247,15 @@ main() {
                 shift
                 ;;
             *)
-                log_error "Unknown option: $1"
-                show_help
-                exit 1
+                # Assume it's a function name
+                if declare -f "$1" > /dev/null; then
+                    func_to_run="$1"
+                    shift
+                else
+                    log_error "Unknown option or function: $1"
+                    show_help
+                    exit 1
+                fi
                 ;;
         esac
     done
@@ -200,7 +267,8 @@ main() {
         log_info "No actual changes will be made to your environment."
     fi
 
-    run_all
+    log_info "Executing function: '$func_to_run'"
+    "$func_to_run"
 }
 
 main "$@"
