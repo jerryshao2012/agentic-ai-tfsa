@@ -177,28 +177,37 @@ create_registry_secret() {
   fi
 }
 
-build_and_push_image() {
-  log_info "Building and pushing container image..."
+get_container_namespace() {
+  # If CONTAINER_NAMESPACE is not set, retrieve it.
+  if [[ -z "${CONTAINER_NAMESPACE:-}" ]]; then
+    log_info "Retrieving container registry namespace..."
+    if [[ "$DRY_RUN" == true ]]; then
+      echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would retrieve container registry namespace"
+      CONTAINER_NAMESPACE="dry-run-namespace"
+    else
+      CONTAINER_NAMESPACE=$(ibmcloud cr namespaces --output json | jq -r '.[].name' | head -1) || {
+          log_error "Failed to parse container registry namespace."
+          exit 1
+      }
+    fi
 
-  # Get container namespace, just grab the first namespace
-  log_info "Retrieving container registry namespace..."
-  if [[ "$DRY_RUN" == true ]]; then
-    echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would retrieve container registry namespace"
-    CONTAINER_NAMESPACE="dry-run-namespace"
-  else
-    CONTAINER_NAMESPACE=$(ibmcloud cr namespaces --output json | jq -r '.[].name' | head -1) || {
-        log_error "Failed to parse container registry namespace."
+    if [[ -z "$CONTAINER_NAMESPACE" ]]; then
+        log_error "No container registry namespace found."
         exit 1
-    }
+    fi
+    log_info "Using container namespace: $CONTAINER_NAMESPACE"
   fi
+}
 
-  if [[ -z "$CONTAINER_NAMESPACE" ]]; then
-      log_error "No container registry namespace found."
-      exit 1
+build_and_push_image() {
+  log_info "5. Building and pushing container image..."
+
+  get_container_namespace
+  if [[ "$DRY_RUN" == true ]]; then
+    echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would call create_registry_secret"
+  else
+    create_registry_secret
   fi
-  log_info "Using container namespace: $CONTAINER_NAMESPACE"
-
-  create_registry_secret
 
   # Install and setup Podman if not available
   if ! command -v podman &>/dev/null; then
@@ -297,17 +306,7 @@ deploy_application() {
     fi
   fi
 
-  if [[ -z "${CONTAINER_NAMESPACE:-}" ]]; then
-    if [[ "$DRY_RUN" == true ]]; then
-      echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would retrieve container registry namespace"
-      CONTAINER_NAMESPACE="dry-run-namespace"
-    else
-      CONTAINER_NAMESPACE=$(ibmcloud cr namespaces --output json | jq -r '.[].name' | head -1) || {
-          log_error "Failed to parse container registry namespace."
-          exit 1
-      }
-    fi
-  fi
+  get_container_namespace
 
   if [[ "$app_exists" == true ]]; then
       log_info "Application already exists, updating deployment..."
@@ -426,15 +425,7 @@ test_endpoints() {
   fi
 
   log_info "Testing sync endpoint:"
-  # Get application URL
-  if [[ -z "${PUBLIC_URL:-}" ]]; then
-    PUBLIC_URL=$(ibmcloud ce application get -n "$CE_PROJECT_NAME" -o json | jq -r '.status.url')
-  fi
-  if [[ -z "$PUBLIC_URL" || "$PUBLIC_URL" == "null" ]]; then
-    log_error "Failed to get application URL"
-    exit 1
-  fi
-  if ! execute curl -s -X POST "$PUBLIC_URL/api/v1/chat/completions" \
+  if ! execute curl -s -X POST "${PUBLIC_URL}/api/v1/chat/completions" \
       -H "Content-Type: application/json" \
       -d '{
           "model": "meta-llama/llama-3-2-90b-vision-instruct",
@@ -448,7 +439,7 @@ test_endpoints() {
   fi
 
   log_info -e "\nTesting streaming endpoint:"
-  if ! execute curl -s -X POST "$PUBLIC_URL/api/v1/chat/completions" \
+  if ! execute curl -s -X POST "${PUBLIC_URL}/api/v1/chat/completions" \
       -H "Content-Type: application/json" \
       -d '{
           "model": "meta-llama/llama-3-2-90b-vision-instruct",
@@ -464,6 +455,17 @@ test_endpoints() {
 
 setup_orchestrate() {
   log_info "10. Setting up Orchestrate environment..."
+
+  # Ensure PUBLIC_URL is set, as it's needed to update the agent YAML
+  if [[ -z "${PUBLIC_URL:-}" ]]; then
+    if [[ "$DRY_RUN" == false ]]; then
+      wait_for_deployment
+    else
+      echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would ensure PUBLIC_URL is set before setting up orchestrate."
+      PUBLIC_URL="https://dry-run-example-url.example.com"
+    fi
+  fi
+
   if [[ "$DRY_RUN" == true ]]; then
     echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would check for orchestrate CLI"
     echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would simulate orchestrate environment setup"
@@ -619,15 +621,7 @@ cleanup_resources() {
   fi
 
   # Get container namespace for image deletion
-  if [[ "$DRY_RUN" == true ]]; then
-    echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would retrieve container registry namespace"
-    CONTAINER_NAMESPACE="dry-run-namespace"
-  else
-    CONTAINER_NAMESPACE=$(ibmcloud cr namespaces --output json | jq -r '.[].name' | head -1) || {
-        log_warn "Failed to parse container registry namespace, skipping image deletion"
-    }
-  fi
-
+  get_container_namespace
   # Delete container image
   if [[ -n "${CONTAINER_NAMESPACE:-}" ]]; then
     log_info "Deleting container image: $CONTAINER_NAMESPACE/$IMAGE_NAME"
@@ -702,6 +696,7 @@ FUNCTIONS:
     setup_resource_group          Set up resource group
     select_code_engine_project    Select Code Engine project
     create_registry_secret        Create registry secret
+    get_container_namespace       Retrieves the container registry namespace
     build_and_push_image          Build and push container image
     deploy_application            Deploy application to Code Engine
     wait_for_deployment           Wait for deployment to complete
@@ -785,8 +780,7 @@ main() {
             log_info "Running specified function: $1"
             "$@"
         else
-            log_error "Function '$1' not found."
-            log_info "Available functions are: authenticate_to_ibmcloud, setup_resource_group, select_code_engine_project, create_registry_secret, build_and_push_image, deploy_application, wait_for_deployment, test_endpoints, setup_orchestrate, cleanup_resources"
+            log_error "Function '$1' not found. See --help for available functions."
             exit 1
         fi
     fi
