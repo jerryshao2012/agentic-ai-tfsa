@@ -53,9 +53,9 @@
 
    2. Activate a remote watsonx Orchestrate environment
    
-   To activate a remote the watsonx Orchestrate environment with the ADK, run the following command in the CLI:
+   To activate/update a remote the watsonx Orchestrate environment with the ADK, run the following command in the CLI:
    ```shell
-   orchestrate env add -n watsonx-challenge -u <service_instance_url> --type ibm_iam --activate
+   orchestrate env add -n "watsonx-challenge" -u "$WO_INSTANCE" --type ibm_iam --activate
    ```
    To make sure the orchestrate environment has been successfully created and activated you can run orchestrate env list.
    ```shell

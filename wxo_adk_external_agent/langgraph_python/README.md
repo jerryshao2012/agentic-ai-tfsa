@@ -36,6 +36,9 @@ It is recommended to implement your own authentication security measures to ensu
 
 Reserve the following resources: itz-watsonx-event-004 in https://techzone.ibm.com/
 - Dev/Test environment: https://techzone.ibm.com/collection/client-engineering-agentic-ai-labs/journey-devtest-environments
+  - Prefer this environment for testing since it has Code Engine
+  - Get wataonx Orchestrate instance URL from https://us-south.watson-orchestrate.cloud.ibm.com/settings
+  - Create a new watsonx AI project in watsonx.ai Studio. Go to Manage to get project id and associate watsonx.ai Runtime service
 - or Workshop environment: https://techzone.ibm.com/collection/client-engineering-agentic-ai-labs/journey-workshop-environments
 
 ### Automated Deployment with deploy.sh
@@ -155,6 +158,7 @@ chmod +x deploy.sh
      - **Domain mappings:** Public 
      Note: if you get an error "Failed to create namespace: You are not authorized to access the IBM Container Registry in this account", try `podman` command to build image locally and then push to repository. Thanks [@Chung Zheng](mailto:Chung.Zheng@ibm.com) provided the solution.
      ```shell
+        brew install yq
         brew install podman
         podman machine init
         podman machine start

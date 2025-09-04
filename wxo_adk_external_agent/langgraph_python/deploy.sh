@@ -11,8 +11,7 @@ readonly DEFAULT_MAX_DEPLOYMENT_WAIT_TIME=300  # 5 minutes in seconds
 readonly DEPLOYMENT_CHECK_INTERVAL=5   # Check every 5 seconds
 
 # Get the directory where the script is located to make it runnable from anywhere
-readonly SCRIPT_DIR
-SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+readonly SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 # Global variables
 DRY_RUN=false
@@ -298,6 +297,18 @@ deploy_application() {
     fi
   fi
 
+  if [[ -z "${CONTAINER_NAMESPACE:-}" ]]; then
+    if [[ "$DRY_RUN" == true ]]; then
+      echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would retrieve container registry namespace"
+      CONTAINER_NAMESPACE="dry-run-namespace"
+    else
+      CONTAINER_NAMESPACE=$(ibmcloud cr namespaces --output json | jq -r '.[].name' | head -1) || {
+          log_error "Failed to parse container registry namespace."
+          exit 1
+      }
+    fi
+  fi
+
   if [[ "$app_exists" == true ]]; then
       log_info "Application already exists, updating deployment..."
       if ! execute ibmcloud ce application update --name "$CE_PROJECT_NAME" \
@@ -305,9 +316,16 @@ deploy_application() {
           --registry-secret "$REGISTRY_SECRET_NAME" \
           --env LOGGING_LEVEL="$LOGGING_LEVEL" \
           --env AI_SERVICES_PROVIDER="$AI_SERVICES_PROVIDER" \
-          --env TAVILY_API_KEY="$TAVILY_API_KEY" \
-          --env WATSONX_API_KEY="$WATSONX_API_KEY" \
+          --env DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+          --env WO_DEVELOPER_EDITION_SOURCE="orchestrate" \
+          --env WO_INSTANCE="$WO_INSTANCE" \
+          --env WD_API_KEY="$WD_API_KEY" \
           --env WATSONX_URL="$WATSONX_URL" \
+          --env WATSONX_API_KEY="$WATSONX_API_KEY" \
+          --env WATSONX_PROJECT_ID="$WATSONX_PROJECT_ID" \
+          --env WATSONX_SPACE_ID="$WATSONX_SPACE_ID" \
+          --env OPENAI_API_KEY="$OPENAI_API_KEY" \
+          --env TAVILY_API_KEY="$TAVILY_API_KEY" \
           --min-scale 1 \
           --max-scale 1 \
           --port 8080 \
@@ -322,9 +340,16 @@ deploy_application() {
           --registry-secret "$REGISTRY_SECRET_NAME" \
           --env LOGGING_LEVEL="$LOGGING_LEVEL" \
           --env AI_SERVICES_PROVIDER="$AI_SERVICES_PROVIDER" \
-          --env TAVILY_API_KEY="$TAVILY_API_KEY" \
-          --env WATSONX_API_KEY="$WATSONX_API_KEY" \
+          --env DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+          --env WO_DEVELOPER_EDITION_SOURCE="orchestrate" \
+          --env WO_INSTANCE="$WO_INSTANCE" \
+          --env WD_API_KEY="$WD_API_KEY" \
           --env WATSONX_URL="$WATSONX_URL" \
+          --env WATSONX_API_KEY="$WATSONX_API_KEY" \
+          --env WATSONX_PROJECT_ID="$WATSONX_PROJECT_ID" \
+          --env WATSONX_SPACE_ID="$WATSONX_SPACE_ID" \
+          --env OPENAI_API_KEY="$OPENAI_API_KEY" \
+          --env TAVILY_API_KEY="$TAVILY_API_KEY" \
           --min-scale 1 \
           --max-scale 1 \
           --visibility public \
@@ -377,6 +402,18 @@ wait_for_deployment() {
       exit 1
   fi
   log_info "8. Deployment complete. Public URL: $PUBLIC_URL"
+  # Update the api_url in tfsa_langgraph_external_agent.yaml with the new PUBLIC_URL
+  if [[ "$DRY_RUN" == true ]]; then
+    echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would update api_url in tfsa_langgraph_external_agent.yaml to $PUBLIC_URL"
+  else
+    if command -v yq &>/dev/null; then
+      yq -i ".api_url = \"$PUBLIC_URL/api/v1/chat/completions\"" "${SCRIPT_DIR}/agents/tfsa_langgraph_external_agent.yaml"
+      log_info "Updated api_url in tfsa_langgraph_external_agent.yaml"
+    else
+      log_error "yq is required to update the YAML file, but it's not installed."
+      exit 1
+    fi
+  fi
 }
 
 test_endpoints() {
@@ -389,6 +426,14 @@ test_endpoints() {
   fi
 
   log_info "Testing sync endpoint:"
+  # Get application URL
+  if [[ -z "${PUBLIC_URL:-}" ]]; then
+    PUBLIC_URL=$(ibmcloud ce application get -n "$CE_PROJECT_NAME" -o json | jq -r '.status.url')
+  fi
+  if [[ -z "$PUBLIC_URL" || "$PUBLIC_URL" == "null" ]]; then
+    log_error "Failed to get application URL"
+    exit 1
+  fi
   if ! execute curl -s -X POST "$PUBLIC_URL/api/v1/chat/completions" \
       -H "Content-Type: application/json" \
       -d '{
@@ -428,11 +473,22 @@ setup_orchestrate() {
   if command -v orchestrate &>/dev/null; then
       # Check if environment already exists
       if orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME"; then
-          log_info "Environment already exists, activating and updating API key..."
-          if ! execute orchestrate env activate "$ORCHESTRATE_ENV_NAME" --api-key "$WATSONX_API_KEY"; then
-              log_error "Failed to activate environment. Try: orchestrate env activate $ORCHESTRATE_ENV_NAME --api-key <api_key>"
-              exit 1
-          fi
+        log_info "Environment '$ORCHESTRATE_ENV_NAME' already exists. Checking URL..."
+        local env_line
+        env_line=$(orchestrate env list | grep "$ORCHESTRATE_ENV_NAME")
+        if [[ "$env_line" != *"$WO_INSTANCE"* ]]; then
+            log_info "Environment '$ORCHESTRATE_ENV_NAME' URL does not match. Updating URL..."
+            if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --activate; then
+                log_error "Failed to update environment '$ORCHESTRATE_ENV_NAME'."
+                exit 1
+            fi
+        else
+            log_info "Environment '$ORCHESTRATE_ENV_NAME' already exists with correct URL. Activating it..."
+            if ! execute orchestrate env activate "$ORCHESTRATE_ENV_NAME"; then
+                log_error "Failed to activate environment '$ORCHESTRATE_ENV_NAME'."
+                exit 1
+            fi
+        fi
       else
           log_info "Creating new environment..."
           if [[ -z "${WO_INSTANCE:-}" ]]; then
@@ -448,21 +504,21 @@ setup_orchestrate() {
 
       # Import agents if environment is available
       if orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME"; then
-          log_info "Importing external agents from ${SCRIPT_DIR}/../agents/"
-          if ! execute orchestrate agents import -f "${SCRIPT_DIR}/../agents/tfsa_langgraph_external_agent.yaml"; then
+          log_info "Importing external agents from ${SCRIPT_DIR}/agents/"
+          if ! execute orchestrate agents import -f "${SCRIPT_DIR}/agents/tfsa_langgraph_external_agent.yaml"; then
               log_error "Failed to import tfsa_langgraph_external_agent.yaml"
               exit 1
           fi
-          if ! execute orchestrate agents import -f "${SCRIPT_DIR}/../agents/connection_with_tfsa_external_agent.yaml"; then
+          if ! execute orchestrate agents import -f "${SCRIPT_DIR}/agents/connection_with_tfsa_external_agent.yaml"; then
             log_error "Failed to import connection_with_tfsa_external_agent.yaml"
             exit 1
           fi
 
           # Extract agent names from YAML files for deployment
           local TFSA_AGENT_NAME
-          TFSA_AGENT_NAME=$(yq -r '.name' "${SCRIPT_DIR}/../agents/tfsa_langgraph_external_agent.yaml")
+          TFSA_AGENT_NAME=$(yq -r '.name' "${SCRIPT_DIR}/agents/tfsa_langgraph_external_agent.yaml")
           local CONNECTION_AGENT_NAME
-          CONNECTION_AGENT_NAME=$(yq -r '.name' "${SCRIPT_DIR}/../agents/connection_with_tfsa_external_agent.yaml")
+          CONNECTION_AGENT_NAME=$(yq -r '.name' "${SCRIPT_DIR}/agents/connection_with_tfsa_external_agent.yaml")
           # Make agents available in watsonx Orchestrate UI
           log_info "Making agents available in watsonx Orchestrate UI..."
           log_info "Agent '$TFSA_AGENT_NAME' and '$CONNECTION_AGENT_NAME' have been imported."

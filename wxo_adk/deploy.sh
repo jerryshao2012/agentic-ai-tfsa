@@ -8,8 +8,7 @@ readonly ORCHESTRATE_ENV_NAME="watsonx-challenge"
 
 # --- Script Setup ---
 # Get the directory where the script is located to make it runnable from anywhere
-readonly SCRIPT_DIR
-SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+readonly SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 # Global variables
 DRY_RUN=false
@@ -81,10 +80,21 @@ setup_environment() {
     fi
 
     if [[ "$env_exists" == "true" ]]; then
-        log_info "Environment '$ORCHESTRATE_ENV_NAME' already exists. Activating it..."
-        if ! execute orchestrate env activate "$ORCHESTRATE_ENV_NAME"; then
-            log_error "Failed to activate environment '$ORCHESTRATE_ENV_NAME'."
-            exit 1
+        log_info "Environment '$ORCHESTRATE_ENV_NAME' already exists. Checking URL..."
+        local env_line
+        env_line=$(orchestrate env list | grep "$ORCHESTRATE_ENV_NAME")
+        if [[ "$env_line" != *"$WO_INSTANCE"* ]]; then
+            log_info "Environment '$ORCHESTRATE_ENV_NAME' URL does not match. Updating URL..."
+            if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --activate; then
+                log_error "Failed to update environment '$ORCHESTRATE_ENV_NAME'."
+                exit 1
+            fi
+        else
+            log_info "Environment '$ORCHESTRATE_ENV_NAME' already exists with correct URL. Activating it..."
+            if ! execute orchestrate env activate "$ORCHESTRATE_ENV_NAME"; then
+                log_error "Failed to activate environment '$ORCHESTRATE_ENV_NAME'."
+                exit 1
+            fi
         fi
     else
         log_info "Environment '$ORCHESTRATE_ENV_NAME' not found. Creating and activating it..."
