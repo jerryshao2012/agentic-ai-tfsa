@@ -13,6 +13,7 @@ AI_SERVICES_PROVIDER = os.getenv('AI_SERVICES_PROVIDER', 'watsonxai')
 WATSONX_PROJECT_ID = os.getenv('WATSONX_PROJECT_ID', '')
 WATSONX_API_KEY = os.getenv('WATSONX_API_KEY', '')
 WATSONX_URL = os.getenv('WATSONX_URL', 'https://us-south.ml.cloud.ibm.com')
+WATSONX_SPACE_ID = os.getenv('WATSONX_SPACE_ID', None)
 
 # --- Optional Provider API Keys ---
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')

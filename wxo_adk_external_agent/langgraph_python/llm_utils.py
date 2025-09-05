@@ -162,17 +162,23 @@ def convert_response_to_messages(response: dict) -> List[Message]:
         if role == 'human':
             message = Message(
                 role='user',
-                content=content
+                content=content,
+                tool_calls=tool_calls,
+                tool_call_id=tool_call_id
             )
         elif role == 'ai':
             message = Message(
                 role='assistant',
-                content=content
+                content=content,
+                tool_calls=tool_calls,
+                tool_call_id=tool_call_id
             )
         else:
             message = Message(
                 role=role,
-                content=content
+                content=content,
+                tool_calls=tool_calls,
+                tool_call_id=tool_call_id
             )
         messages.append(message)
     return messages
@@ -197,7 +203,9 @@ def get_llm_sync(messages: List[Message], model: str, _thread_id: str, tools):
         results = response.content
         message = Message(
             role='ai',
-            content=results
+            content=results,
+            tool_calls=None,
+            tool_call_id=None
         )
         messages = [message.model_dump()]
     else:
@@ -217,7 +225,7 @@ def validate_chat_history(messages: List[BaseMessage]):
                 if isinstance(tool_call, dict):
                     tool_call_ids.add(tool_call.get('id'))
                 else:
-                    tool_call_ids.add(tool_call.id)
+                    tool_call_ids.add(getattr(tool_call, 'id', None))
 
     for msg in messages:
         if isinstance(msg, ToolMessage):
