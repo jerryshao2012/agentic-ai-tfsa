@@ -205,6 +205,8 @@ streamlit run mcp_chat_host.py
     2. Authenticate with Google
     3. Redirected to /protected with user info
     4. Check MCP integration logic
+![Demo - TFSA](docs/Demo%20-%20tfsa.png)
+![Demo - e-Transfer](docs/Demo%20-%20e-transfer.png)
 
 ### System Architecture
 MCP transforms brittle AI systems into flexible, enterprise-ready agent ecosystems by standardizing interactions between reasoning (client), orchestration (host), and capabilities (servers).
