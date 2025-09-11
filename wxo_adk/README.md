@@ -164,3 +164,6 @@
       My user ID is user_123. What is my contribution room for 2025?
       Yes, I want to contribute $2000
       ```
+
+3. Testing
+![TFSA Agent Demo](demo.png)
