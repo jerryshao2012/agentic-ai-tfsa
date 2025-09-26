@@ -52,7 +52,7 @@ check_requirements() {
     fi
 
     # Load environment variables from .env file in the same directory as the script
-    local ENV_FILE="${SCRIPT_DIR}/.env"
+    local ENV_FILE="${SCRIPT_DIR}/../.env"
     if [[ -f "$ENV_FILE" ]]; then
         log_info "Loading environment variables from $ENV_FILE"
         # shellcheck source=.env

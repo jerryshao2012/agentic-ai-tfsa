@@ -64,10 +64,10 @@ check_requirements() {
   done
 
   # Load environment variables
-  ENV_FILE="${SCRIPT_DIR}/../.env"
+  ENV_FILE="${SCRIPT_DIR}/../../.env"
   if [[ -f "$ENV_FILE" ]]; then
       log_info "Loading environment variables from $ENV_FILE"
-      # shellcheck source=../.env
+      # shellcheck source=../../.env
       source "$ENV_FILE"
   else
       log_error "$ENV_FILE file not found. Please create one with required variables."
