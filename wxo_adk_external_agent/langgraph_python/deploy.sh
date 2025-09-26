@@ -516,18 +516,8 @@ setup_orchestrate() {
             exit 1
           fi
 
-          # Extract agent names from YAML files for deployment
-          local TFSA_AGENT_NAME
-          TFSA_AGENT_NAME=$(yq -r '.name' "${SCRIPT_DIR}/agents/tfsa_langgraph_external_agent.yaml")
-          local CONNECTION_AGENT_NAME
-          CONNECTION_AGENT_NAME=$(yq -r '.name' "${SCRIPT_DIR}/agents/connection_with_tfsa_external_agent.yaml")
-          # Make agents available in watsonx Orchestrate UI
-          log_info "Making agents available in watsonx Orchestrate UI..."
-          log_info "Agent '$TFSA_AGENT_NAME' and '$CONNECTION_AGENT_NAME' have been imported."
-          log_info "To make them available in the chat UI, you may need to:"
-          log_info "1. Log in to your watsonx.Orchestrate instance"
-          log_info "2. Navigate to the chat UI section, manage agents"
-          log_info "3. Ensure the agents are tested and deployed for use in the chat interface"
+          deploy_agents
+
       else
           log_error "Environment $ORCHESTRATE_ENV_NAME not available after setup"
           exit 1
@@ -538,6 +528,74 @@ setup_orchestrate() {
   else
       log_info "Orchestrate CLI not found, skipping environment setup"
   fi
+}
+
+deploy_agents() {
+    log_info "Deploying agents..."
+    local agents_dir="${SCRIPT_DIR}/agents"
+    if [[ ! -d "$agents_dir" ]]; then
+        log_error "Agents directory not found at '$agents_dir'."
+        exit 1
+    fi
+
+    local agents_to_deploy=(
+        "tfsa_langgraph_external_agent.yaml"
+        "connection_with_tfsa_external_agent.yaml"
+    )
+
+    for agent_file in "${agents_to_deploy[@]}"; do
+        local agent_path="${agents_dir}/${agent_file}"
+        if [[ -f "$agent_path" ]]; then
+            local agent_name
+            agent_name=$(yq -r '.name' "$agent_path")
+
+            if [[ -n "$agent_name" ]]; then
+                log_info "Deploying agent: $agent_name"
+                if ! execute orchestrate agents deploy --name "$agent_name"; then
+                    log_warn "Failed to deploy agent '$agent_name', continuing..."
+                fi
+            else
+                log_warn "Could not determine name for agent in '$agent_file'. Skipping."
+            fi
+        else
+            log_warn "Agent file not found, skipping: $agent_path"
+        fi
+    done
+    log_info "Agent deployment process complete."
+}
+
+undeploy_agents() {
+    log_info "Undeploying agents..."
+    local agents_dir="${SCRIPT_DIR}/agents"
+    if [[ ! -d "$agents_dir" ]]; then
+        log_error "Agents directory not found at '$agents_dir'."
+        exit 1
+    fi
+
+    local agents_to_undeploy=(
+        "connection_with_tfsa_external_agent.yaml"
+        "tfsa_langgraph_external_agent.yaml"
+    )
+
+    for agent_file in "${agents_to_undeploy[@]}"; do
+        local agent_path="${agents_dir}/${agent_file}"
+        if [[ -f "$agent_path" ]]; then
+            local agent_name
+            agent_name=$(yq -r '.name' "$agent_path")
+
+            if [[ -n "$agent_name" ]]; then
+                log_info "Undeploying agent: $agent_name"
+                if ! execute orchestrate agents undeploy --name "$agent_name"; then
+                    log_warn "Failed to undeploy agent '$agent_name', continuing..."
+                fi
+            else
+                log_warn "Could not determine name for agent in '$agent_file'. Skipping."
+            fi
+        else
+            log_warn "Agent file not found, skipping: $agent_path"
+        fi
+    done
+    log_info "Agent undeployment process complete."
 }
 
 cleanup_resources() {
@@ -647,6 +705,7 @@ cleanup_resources() {
   else
     if command -v orchestrate &>/dev/null; then
       if orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME"; then
+        undeploy_agents
         if ! execute orchestrate env remove -n "$ORCHESTRATE_ENV_NAME" --force; then
             log_warn "Failed to delete Orchestrate environment: $ORCHESTRATE_ENV_NAME"
         else
@@ -702,6 +761,8 @@ FUNCTIONS:
     wait_for_deployment           Wait for deployment to complete
     test_endpoints                Test deployed endpoints
     setup_orchestrate             Set up Orchestrate environment
+    deploy_agents                 Deploy agents to Orchestrate
+    undeploy_agents               Undeploy agents from Orchestrate
     cleanup_resources             Remove all deployed resources
     run_all                       Run all deployment steps (default)
 

@@ -10,7 +10,7 @@
      On your local computer open your Terminal / Command Prompt and run the following commands:
      1. For Mac users, install the ADK with pip:
      ```shell
-     pip install ibm-watsonx-orchestrate
+     pip install ibm-watsonx-orchestrate langchain-ibm
      ```
      2. For Windows users, you will need to setup a Windows Subsystem for Linux environment. Open PowerShell then run following:
      ```shell
@@ -128,31 +128,44 @@
       orchestrate tools remove -n search_cra_tfsa_policy
       ```
 
-   3. Import agents
-      ```shell
-      orchestrate agents import -f tfsa_policy_agent.yaml
-      orchestrate agents import -f tfsa_calculation_agent.yaml
-      orchestrate agents import -f tfsa_transaction_agent.yaml
-      orchestrate agents import -f tfsa_orchestrator_agent.yaml
-      ```
+   3. Import, Deploy, and Cleanup Agents
+
+      A `deploy.sh` script is provided to automate the import, deployment, and cleanup of agents.
+
+      *   **Full Setup (Recommended)**: To run the entire setup process, including environment setup, tool import, agent import, and agent deployment, run:
+          ```shell
+          ./deploy.sh
+          ```
+
+      *   **Import Agents**: If you only want to import the agents, run:
+          ```shell
+          ./deploy.sh import_agents
+          ```
+
+      *   **Deploy Agents**: To deploy the agents after they have been imported, run:
+          ```shell
+          ./deploy.sh deploy_agents
+          ```
+
+      *   **Undeploy Agents**: To undeploy the agents, run:
+          ```shell
+          ./deploy.sh undeploy_agents
+          ```
+
+      *   **Cleanup Resources**: To undeploy and remove all agents, run:
+          ```shell
+          ./deploy.sh cleanup_resources
+          ```
 
     Note: Download existing Agent
     ```shell
     orchestrate agents export -n tfsa_calculation_agent -k external -o tfsa_calculation_agent.yaml --agent-only
     orchestrate agents export -n tfsa_calculation_agent -k external -o tfsa_calculation_agent.zip
     ```
-    
-    Note: Remove existing Agent
-    ```shell
-    orchestrate agents remove --name tfsa_orchestrator --kind native
-    orchestrate agents remove --name tfsa_transaction_agent --kind native
-    orchestrate agents remove --name tfsa_calculation_agent --kind native
-    orchestrate agents remove --name tfsa_policy_agent --kind native
-    ```
 
-   4. Test in the watsonx Orchestrate chat UI or via the external-chat provider.
-      1. Deploy agents
-      2. Select agent & test in watsonx Orchestrate chat UI
+   4. Test in the watsonx Orchestrate chat UI
+
+      After running the deployment script, the agents will be available in the watsonx Orchestrate chat UI.
    
       Test FAQs
       ```text

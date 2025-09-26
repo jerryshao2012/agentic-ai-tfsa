@@ -80,23 +80,41 @@ chmod +x deploy.sh
 ```shell
 ./deploy.sh
 ```
+This command runs all steps from authentication to deploying the application and setting up the Orchestrate environment, including importing and deploying the agents.
+
 3. For dry-run (simulation only):
 ```shell
 ./deploy.sh --dry-run
 ```
+
 4. Run specific functions individually:
+The script is composed of several functions that can be run independently.
 ```shell
+# Authenticate to IBM Cloud
 ./deploy.sh authenticate_to_ibmcloud
-./deploy.sh setup_resource_group
+
+# Build and push the container image
 ./deploy.sh build_and_push_image
+
+# Deploy the application to Code Engine
 ./deploy.sh deploy_application
-./deploy.sh test_endpoints
+
+# Set up the Orchestrate environment, then import and deploy agents
 ./deploy.sh setup_orchestrate
+
+# Deploy agents to Orchestrate
+./deploy.sh deploy_agents
+
+# Undeploy agents from Orchestrate
+./deploy.sh undeploy_agents
 ```
+For a full list of functions, run `./deploy.sh --help`.
+
 5. Clean up resources:
 ```shell
 ./deploy.sh cleanup_resources
 ```
+This command cleans up all created resources, including the Code Engine application, registry secret, and Orchestrate environment. It also undeploys the agents before cleanup.
 
 ### Manual Deployment
 #### Step 1: Create a Code Engine Project

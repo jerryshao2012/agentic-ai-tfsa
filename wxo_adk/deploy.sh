@@ -158,10 +158,88 @@ import_agents() {
     log_info "Agent import process complete."
 }
 
+deploy_agents() {
+    log_info "Deploying agents..."
+    local agents_dir="${SCRIPT_DIR}/agents"
+    if [[ ! -d "$agents_dir" ]]; then
+        log_error "Agents directory not found at '$agents_dir'."
+        exit 1
+    fi
+
+    # Agents are deployed in order of dependency.
+    # Collaborator agents first, then the orchestrator agent.
+    local agents_to_deploy=(
+        "tfsa_policy_agent.yaml"
+        "tfsa_calculation_agent.yaml"
+        "tfsa_transaction_agent.yaml"
+        "tfsa_orchestrator_agent.yaml"
+    )
+
+    for agent_file in "${agents_to_deploy[@]}"; do
+        local agent_path="${agents_dir}/${agent_file}"
+        if [[ -f "$agent_path" ]]; then
+            local agent_name
+            agent_name=$(grep -E '^\s*name:' "$agent_path" | sed -e 's/^\s*name:\s*//' -e 's/"//g' -e "s/'//g" | tr -d '[:space:]')
+
+            if [[ -n "$agent_name" ]]; then
+                log_info "Deploying agent: $agent_name"
+                if ! execute orchestrate agents deploy --name "$agent_name"; then
+                    log_warn "Failed to deploy agent '$agent_name', continuing..."
+                fi
+            else
+                log_warn "Could not determine name for agent in '$agent_file'. Skipping."
+            fi
+        else
+            log_warn "Agent file not found, skipping: $agent_path"
+        fi
+    done
+    log_info "Agent deployment process complete."
+}
+
+undeploy_agents() {
+    log_info "Undeploying agents..."
+    local agents_dir="${SCRIPT_DIR}/agents"
+    if [[ ! -d "$agents_dir" ]]; then
+        log_error "Agents directory not found at '$agents_dir'."
+        exit 1
+    fi
+
+    # Agents are undeployed in reverse order of dependency.
+    # Orchestrator agent first, then the collaborator agents.
+    local agents_to_undeploy=(
+        "tfsa_orchestrator_agent.yaml"
+        "tfsa_transaction_agent.yaml"
+        "tfsa_calculation_agent.yaml"
+        "tfsa_policy_agent.yaml"
+    )
+
+    for agent_file in "${agents_to_undeploy[@]}"; do
+        local agent_path="${agents_dir}/${agent_file}"
+        if [[ -f "$agent_path" ]]; then
+            local agent_name
+            agent_name=$(grep -E '^\s*name:' "$agent_path" | sed -e 's/^\s*name:\s*//' -e 's/"//g' -e "s/'//g" | tr -d '[:space:]')
+
+            if [[ -n "$agent_name" ]]; then
+                log_info "Undeploying agent: $agent_name"
+                if ! execute orchestrate agents undeploy --name "$agent_name"; then
+                    log_warn "Failed to undeploy agent '$agent_name', continuing..."
+                fi
+            else
+                log_warn "Could not determine name for agent in '$agent_file'. Skipping."
+            fi
+        else
+            log_warn "Agent file not found, skipping: $agent_path"
+        fi
+    done
+    log_info "Agent undeployment process complete."
+}
+
 cleanup_resources() {
     log_info "=== Cleaning up Orchestrate Resources ==="
     # Ensure the environment is active to issue 'agents remove' commands
     setup_environment
+
+    undeploy_agents
 
     local agents_dir="${SCRIPT_DIR}/agents"
     local agents_to_remove=(
@@ -205,8 +283,9 @@ run_all() {
     setup_environment
     import_tools
     import_agents
+    deploy_agents
     log_info "=== Orchestrate Setup Complete ==="
-    log_info "Agents and tools have been imported. Please go to the watsonx Orchestrate UI to deploy and test them."
+    log_info "Agents and tools have been imported and deployed. You can now use them in the watsonx Orchestrate UI."
 }
 
 # --- Argument Parsing and Main Execution ---
@@ -215,18 +294,20 @@ show_help() {
 Usage: $0 [OPTION] [FUNCTION]
 
 Sets up the watsonx.Orchestrate environment by creating/activating the environment
-and importing the necessary tools and agents.
+and importing and deploying the necessary tools and agents.
 
 OPTIONS:
     -h, --help          Show this help message and exit
     --dry-run           Simulate actions without executing them
 
 FUNCTIONS:
-    run_all             (default) Runs all setup steps: setup_environment, import_tools, import_agents.
+    run_all             (default) Runs all setup steps: setup_environment, import_tools, import_agents, deploy_agents.
     setup_environment   Creates or activates the Orchestrate environment.
     import_tools        Imports tools from the 'tools' directory.
     import_agents       Imports agents from the 'agents' directory.
-    cleanup_resources   Removes imported agents.
+    deploy_agents       Deploys imported agents.
+    undeploy_agents     Undeploys agents.
+    cleanup_resources   Undeploys and removes imported agents.
 
 If no function is specified, 'run_all' is executed.
 EOF
