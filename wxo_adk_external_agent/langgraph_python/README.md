@@ -44,6 +44,10 @@ Reserve the following resources: itz-watsonx-event-004 in https://techzone.ibm.c
 ### Automated Deployment with deploy.sh
 We provide a deployment script `deploy.sh` that automates the entire deployment process. The script handles authentication, resource setup, container image building, application deployment, and testing.
 
+**Key Features of the Deployment Script:**
+*   **Dynamic Agent Discovery**: The script automatically scans the `agents/` directory for all `*.yaml` files. There's no need to maintain a manual list of agents in the script.
+*   **Dependency-Aware Deployment**: It analyzes dependencies between agents by checking the `collaborators` field in the YAML files. It ensures that base agents are imported and deployed *before* the agents that depend on them. Cleanup is performed in the reverse order.
+
 ### Prerequisites
 * IBM Cloud CLI installed and configured
 * Required tools: `jq`, `curl`, `podman` (or `docker`), `yq`
@@ -59,7 +63,7 @@ DEEPSEEK_API_KEY=<deepseek_api_key>
 
 WO_DEVELOPER_EDITION_SOURCE=orchestrate
 WO_INSTANCE=<service_instance_url>
-WD_API_KEY=<wxo_api_key>
+WO_API_KEY=<wxo_api_key>
 
 WATSONX_URL=https://us-south.ml.cloud.ibm.com
 WATSONX_API_KEY=<watsonx_api_key>
@@ -80,7 +84,7 @@ chmod +x deploy.sh
 ```shell
 ./deploy.sh
 ```
-This command runs all steps from authentication to deploying the application and setting up the Orchestrate environment, including importing and deploying the agents.
+This command runs all steps from authentication to deploying the application and setting up the Orchestrate environment. It automatically discovers, imports, and deploys agents in the correct dependency order.
 
 3. For dry-run (simulation only):
 ```shell
@@ -102,11 +106,17 @@ The script is composed of several functions that can be run independently.
 # Set up the Orchestrate environment, then import and deploy agents
 ./deploy.sh setup_orchestrate
 
-# Deploy agents to Orchestrate
+# Import agents in dependency order
+./deploy.sh import_agents
+
+# Deploy agents in dependency order
 ./deploy.sh deploy_agents
 
-# Undeploy agents from Orchestrate
+# Undeploy agents in reverse dependency order
 ./deploy.sh undeploy_agents
+
+# Remove agents from orchestrate
+./deploy.sh remove_agents
 ```
 For a full list of functions, run `./deploy.sh --help`.
 
@@ -114,7 +124,7 @@ For a full list of functions, run `./deploy.sh --help`.
 ```shell
 ./deploy.sh cleanup_resources
 ```
-This command cleans up all created resources, including the Code Engine application, registry secret, and Orchestrate environment. It also undeploys the agents before cleanup.
+This command cleans up all created resources, including the Code Engine application, registry secret, and Orchestrate environment. It also undeploys and removes the agents before cleanup.
 
 ### Manual Deployment
 #### Step 1: Create a Code Engine Project
@@ -202,7 +212,7 @@ This command cleans up all created resources, including the Code Engine applicat
           --env DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
           --env WO_DEVELOPER_EDITION_SOURCE="orchestrate" \
           --env WO_INSTANCE="$WO_INSTANCE" \
-          --env WD_API_KEY="$WDS_API_KEY" \
+          --env WO_API_KEY="$WO_API_KEY" \
           --env WATSONX_URL="$WATSONX_URL" \
           --env WATSONX_API_KEY="$WATSONX_API_KEY" \
           --env WATSONX_PROJECT_ID="$WATSONX_PROJECT_ID" \

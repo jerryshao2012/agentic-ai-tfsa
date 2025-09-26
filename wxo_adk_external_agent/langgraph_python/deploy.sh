@@ -17,6 +17,8 @@ readonly SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null 
 DRY_RUN=false
 SHOW_HELP=false
 MAX_DEPLOYMENT_WAIT_TIME=$DEFAULT_MAX_DEPLOYMENT_WAIT_TIME
+AGENT_FILES_ORDERED=()
+AGENT_FILES_REVERSED=()
 
 # ANSI color codes
 readonly COLOR_RESET='\033[0m'
@@ -66,8 +68,7 @@ check_requirements() {
   # Load environment variables
   ENV_FILE="${SCRIPT_DIR}/../../.env"
   if [[ -f "$ENV_FILE" ]]; then
-      log_info "Loading environment variables from $ENV_FILE"
-      # shellcheck source=../../.env
+      log_info "Loading and exporting environment variables from $ENV_FILE"
       source "$ENV_FILE"
   else
       log_error "$ENV_FILE file not found. Please create one with required variables."
@@ -75,7 +76,7 @@ check_requirements() {
   fi
 
   # Validate required environment variables
-  required_vars=("WATSONX_API_KEY" "WATSONX_PROJECT_ID" "WATSONX_URL" "TAVILY_API_KEY" "WO_INSTANCE" "WD_API_KEY" "AI_SERVICES_PROVIDER" "LOGGING_LEVEL")
+  required_vars=("WATSONX_API_KEY" "WATSONX_PROJECT_ID" "WATSONX_URL" "TAVILY_API_KEY" "WO_INSTANCE" "WO_API_KEY" "AI_SERVICES_PROVIDER" "LOGGING_LEVEL")
   missing_vars=()
   for var in "${required_vars[@]}"; do
       if [[ -z "${!var:-}" ]]; then
@@ -84,7 +85,7 @@ check_requirements() {
   done
 
   if [[ ${#missing_vars[@]} -gt 0 ]]; then
-      log_error "The following required variables are not set in .env file:"
+      log_error "The following required variables are not set in .env file. Please check the file for formatting issues (e.g., extra spaces, special characters, or incorrect quoting)."
       printf '%s\n' "${missing_vars[@]}"
       exit 1
   fi
@@ -318,7 +319,7 @@ deploy_application() {
           --env DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
           --env WO_DEVELOPER_EDITION_SOURCE="orchestrate" \
           --env WO_INSTANCE="$WO_INSTANCE" \
-          --env WD_API_KEY="$WD_API_KEY" \
+          --env WO_API_KEY="$WO_API_KEY" \
           --env WATSONX_URL="$WATSONX_URL" \
           --env WATSONX_API_KEY="$WATSONX_API_KEY" \
           --env WATSONX_PROJECT_ID="$WATSONX_PROJECT_ID" \
@@ -342,7 +343,7 @@ deploy_application() {
           --env DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
           --env WO_DEVELOPER_EDITION_SOURCE="orchestrate" \
           --env WO_INSTANCE="$WO_INSTANCE" \
-          --env WD_API_KEY="$WD_API_KEY" \
+          --env WO_API_KEY="$WO_API_KEY" \
           --env WATSONX_URL="$WATSONX_URL" \
           --env WATSONX_API_KEY="$WATSONX_API_KEY" \
           --env WATSONX_PROJECT_ID="$WATSONX_PROJECT_ID" \
@@ -453,101 +454,145 @@ test_endpoints() {
   fi
 }
 
-setup_orchestrate() {
-  log_info "10. Setting up Orchestrate environment..."
-
-  # Ensure PUBLIC_URL is set, as it's needed to update the agent YAML
-  if [[ -z "${PUBLIC_URL:-}" ]]; then
-    if [[ "$DRY_RUN" == false ]]; then
-      wait_for_deployment
-    else
-      echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would ensure PUBLIC_URL is set before setting up orchestrate."
-      PUBLIC_URL="https://dry-run-example-url.example.com"
-    fi
-  fi
-
-  if [[ "$DRY_RUN" == true ]]; then
-    echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would check for orchestrate CLI"
-    echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would simulate orchestrate environment setup"
-    return 0
-  fi
-
-  if command -v orchestrate &>/dev/null; then
-      # Check if environment already exists
-      if orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME"; then
-        log_info "Environment '$ORCHESTRATE_ENV_NAME' already exists. Checking URL..."
-        local env_line
-        env_line=$(orchestrate env list | grep "$ORCHESTRATE_ENV_NAME")
-        if [[ "$env_line" != *"$WO_INSTANCE"* ]]; then
-            log_info "Environment '$ORCHESTRATE_ENV_NAME' URL does not match. Updating URL..."
-            if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --activate; then
-                log_error "Failed to update environment '$ORCHESTRATE_ENV_NAME'."
-                exit 1
-            fi
-        else
-            log_info "Environment '$ORCHESTRATE_ENV_NAME' already exists with correct URL. Activating it..."
-            if ! execute orchestrate env activate "$ORCHESTRATE_ENV_NAME"; then
-                log_error "Failed to activate environment '$ORCHESTRATE_ENV_NAME'."
-                exit 1
-            fi
-        fi
-      else
-          log_info "Creating new environment..."
-          if [[ -z "${WO_INSTANCE:-}" ]]; then
-              log_error "WO_INSTANCE not set, cannot create environment"
-              exit 1
-          else
-              if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --activate; then
-                  log_error "Failed to create environment"
-                  exit 1
-              fi
-          fi
-      fi
-
-      # Import agents if environment is available
-      if orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME"; then
-          log_info "Importing external agents from ${SCRIPT_DIR}/agents/"
-          if ! execute orchestrate agents import -f "${SCRIPT_DIR}/agents/tfsa_langgraph_external_agent.yaml"; then
-              log_error "Failed to import tfsa_langgraph_external_agent.yaml"
-              exit 1
-          fi
-          if ! execute orchestrate agents import -f "${SCRIPT_DIR}/agents/connection_with_tfsa_external_agent.yaml"; then
-            log_error "Failed to import connection_with_tfsa_external_agent.yaml"
-            exit 1
-          fi
-
-          deploy_agents
-
-      else
-          log_error "Environment $ORCHESTRATE_ENV_NAME not available after setup"
-          exit 1
-      fi
-
-      # List environments for verification
-      orchestrate env list
-  else
-      log_info "Orchestrate CLI not found, skipping environment setup"
-  fi
-}
-
-deploy_agents() {
-    log_info "Deploying agents..."
+generate_agent_deployment_order() {
+    log_info "Analyzing agent deployment order..."
     local agents_dir="${SCRIPT_DIR}/agents"
     if [[ ! -d "$agents_dir" ]]; then
         log_error "Agents directory not found at '$agents_dir'."
         exit 1
     fi
 
-    local agents_to_deploy=(
-        "tfsa_langgraph_external_agent.yaml"
-        "connection_with_tfsa_external_agent.yaml"
-    )
+    local all_agent_files=()
+    local base_agents=()
+    local dependent_agents=()
 
-    for agent_file in "${agents_to_deploy[@]}"; do
-        local agent_path="${agents_dir}/${agent_file}"
-        if [[ -f "$agent_path" ]]; then
+    while IFS= read -r -d $'\0' file; do
+        all_agent_files+=("$file")
+    done < <(find "$agents_dir" -name "*.yaml" -print0)
+
+    if [[ ${#all_agent_files[@]} -eq 0 ]]; then
+        log_warn "No agent YAML files found in $agents_dir."
+        return
+    fi
+
+    for agent_file in "${all_agent_files[@]}"; do
+        if yq -e '.collaborators' "$agent_file" >/dev/null 2>&1; then
+            dependent_agents+=("$agent_file")
+        else
+            base_agents+=("$agent_file")
+        fi
+    done
+
+    AGENT_FILES_ORDERED=("${base_agents[@]}" "${dependent_agents[@]}")
+
+    for ((i=${#AGENT_FILES_ORDERED[@]}-1; i>=0; i--)); do
+        AGENT_FILES_REVERSED+=("${AGENT_FILES_ORDERED[i]}")
+    done
+
+    log_info "Agent deployment order determined:"
+    for file in "${AGENT_FILES_ORDERED[@]}"; do
+        log_info "  -> $(basename "$file")"
+    done
+}
+
+setup_orchestrate() {
+  log_info "10. Setting up and activating Orchestrate environment: '$ORCHESTRATE_ENV_NAME'..."
+
+  if [[ -z "${PUBLIC_URL:-}" ]]; then
+      if [[ "$DRY_RUN" == false ]]; then
+          wait_for_deployment
+      else
+          echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would ensure PUBLIC_URL is set before setting up orchestrate."
+          PUBLIC_URL="https://dry-run-example-url.example.com"
+      fi
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+      echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would check for orchestrate CLI"
+      echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would simulate orchestrate environment setup"
+      return 0
+  fi
+
+  # Ensure WO_INSTANCE is available, as this function depends on it.
+  if [[ -z "${WO_INSTANCE:-}" ]]; then
+      log_error "WO_INSTANCE is not set. Please ensure it is in your .env file."
+      exit 1
+  fi
+
+  if command -v orchestrate &>/dev/null; then
+      # Check if environment already exists
+      env_exists=$(orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME" && echo "true" || echo "false")
+
+      if [[ "$env_exists" == "true" ]]; then
+          log_info "Environment '$ORCHESTRATE_ENV_NAME' already exists. Checking URL..."
+          local env_line
+          env_line=$(orchestrate env list | grep "$ORCHESTRATE_ENV_NAME")
+          if [[ "$env_line" != *"$WO_INSTANCE"* ]]; then
+              log_info "Environment '$ORCHESTRATE_ENV_NAME' URL does not match. Updating URL..."
+              if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --activate; then
+                  log_error "Failed to update environment '$ORCHESTRATE_ENV_NAME'."
+                  exit 1
+             fi
+          else
+             log_info "Environment '$ORCHESTRATE_ENV_NAME' already exists with correct URL. Activating it..."
+             if ! execute orchestrate env activate "$ORCHESTRATE_ENV_NAME"; then
+                log_error "Failed to activate environment '$ORCHESTRATE_ENV_NAME'."
+                exit 1
+             fi
+          fi
+      else
+          log_info "Environment '$ORCHESTRATE_ENV_NAME' not found. Creating and activating it..."
+          if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --activate; then
+              log_error "Failed to create and activate environment '$ORCHESTRATE_ENV_NAME'."
+              exit 1
+          fi
+      fi
+
+      if orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME"; then
+          import_agents
+          deploy_agents
+      else
+          log_error "Environment $ORCHESTRATE_ENV_NAME not available after setup"
+          exit 1
+      fi
+
+      orchestrate env list
+  else
+    log_info "Orchestrate CLI not found, skipping environment setup"
+  fi
+}
+
+import_agents() {
+    log_info "Importing agents in dependency order..."
+    if [[ ${#AGENT_FILES_ORDERED[@]} -eq 0 ]]; then
+        log_warn "No agent files found to import."
+        return
+    fi
+
+    for agent_file in "${AGENT_FILES_ORDERED[@]}"; do
+        if [[ -f "$agent_file" ]]; then
+            log_info "Importing agent: $(basename "$agent_file")"
+            if ! execute orchestrate agents import -f "$agent_file"; then
+                log_warn "Failed to import agent from '$(basename "$agent_file")', continuing..."
+            fi
+        else
+            log_warn "Agent file not found, skipping: $agent_file"
+        fi
+    done
+    log_info "Agent import process complete."
+}
+
+deploy_agents() {
+    log_info "Deploying agents in dependency order..."
+    if [[ ${#AGENT_FILES_ORDERED[@]} -eq 0 ]]; then
+        log_warn "No agent files found to deploy."
+        return
+    fi
+
+    for agent_file in "${AGENT_FILES_ORDERED[@]}"; do
+        if [[ -f "$agent_file" ]]; then
             local agent_name
-            agent_name=$(yq -r '.name' "$agent_path")
+            agent_name=$(yq -r '.name' "$agent_file")
 
             if [[ -n "$agent_name" ]]; then
                 log_info "Deploying agent: $agent_name"
@@ -555,33 +600,26 @@ deploy_agents() {
                     log_warn "Failed to deploy agent '$agent_name', continuing..."
                 fi
             else
-                log_warn "Could not determine name for agent in '$agent_file'. Skipping."
+                log_warn "Could not determine name for agent in '$(basename "$agent_file")'. Skipping."
             fi
         else
-            log_warn "Agent file not found, skipping: $agent_path"
+            log_warn "Agent file not found, skipping: $agent_file"
         fi
     done
     log_info "Agent deployment process complete."
 }
 
 undeploy_agents() {
-    log_info "Undeploying agents..."
-    local agents_dir="${SCRIPT_DIR}/agents"
-    if [[ ! -d "$agents_dir" ]]; then
-        log_error "Agents directory not found at '$agents_dir'."
-        exit 1
+    log_info "Undeploying agents in reverse dependency order..."
+    if [[ ${#AGENT_FILES_REVERSED[@]} -eq 0 ]]; then
+        log_warn "No agent files found to undeploy."
+        return
     fi
 
-    local agents_to_undeploy=(
-        "connection_with_tfsa_external_agent.yaml"
-        "tfsa_langgraph_external_agent.yaml"
-    )
-
-    for agent_file in "${agents_to_undeploy[@]}"; do
-        local agent_path="${agents_dir}/${agent_file}"
-        if [[ -f "$agent_path" ]]; then
+    for agent_file in "${AGENT_FILES_REVERSED[@]}"; do
+        if [[ -f "$agent_file" ]]; then
             local agent_name
-            agent_name=$(yq -r '.name' "$agent_path")
+            agent_name=$(yq -r '.name' "$agent_file")
 
             if [[ -n "$agent_name" ]]; then
                 log_info "Undeploying agent: $agent_name"
@@ -589,19 +627,47 @@ undeploy_agents() {
                     log_warn "Failed to undeploy agent '$agent_name', continuing..."
                 fi
             else
-                log_warn "Could not determine name for agent in '$agent_file'. Skipping."
+                log_warn "Could not determine name for agent in '$(basename "$agent_file")'. Skipping."
             fi
         else
-            log_warn "Agent file not found, skipping: $agent_path"
+            log_warn "Agent file not found, skipping: $agent_file"
         fi
     done
     log_info "Agent undeployment process complete."
 }
 
+remove_agents() {
+    log_info "Removing agents..."
+    if [[ ${#AGENT_FILES_REVERSED[@]} -eq 0 ]]; then
+        log_warn "No agents to remove."
+        return
+    fi
+
+    for agent_file in "${AGENT_FILES_REVERSED[@]}"; do
+        if [[ -f "$agent_file" ]]; then
+            local agent_name
+            agent_name=$(yq -r '.name' "$agent_file")
+            local agent_kind
+            agent_kind=$(yq -r '.kind' "$agent_file")
+
+            if [[ -n "$agent_name" && -n "$agent_kind" ]]; then
+                log_info "Removing agent: '$agent_name' (kind: $agent_kind)"
+                if ! execute orchestrate agents remove --name "$agent_name" --kind "$agent_kind" --force; then
+                    log_warn "Could not remove agent '$agent_name'. It might not exist or an error occurred."
+                fi
+            else
+                log_warn "Could not determine name and kind for agent in '$(basename "$agent_file")'. Skipping."
+            fi
+        else
+            log_warn "Agent file not found, skipping: $agent_file"
+        fi
+    done
+    log_info "Agent removal process complete."
+}
+
 cleanup_resources() {
   log_info "=== Cleaning up TFSA Agent Deployment Resources ==="
 
-  # Authenticate to IBM Cloud
   if [[ "$DRY_RUN" == false ]]; then
     if ! ibmcloud login --apikey "$WATSONX_API_KEY" -r "$CE_REGION" --quiet; then
         log_error "Failed to login to IBM Cloud"
@@ -611,7 +677,6 @@ cleanup_resources() {
     echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would authenticate to IBM Cloud"
   fi
 
-  # Set target resource group
   if [[ "$DRY_RUN" == true ]]; then
     echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would set target resource group"
     CE_RESOURCE_GROUP="dry-run-resource-group"
@@ -630,7 +695,6 @@ cleanup_resources() {
       fi
   fi
 
-  # Select Code Engine project
   if [[ "$DRY_RUN" == true ]]; then
     echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would select Code Engine project"
     CE_PROJECT_ID="dry-run-project"
@@ -646,7 +710,6 @@ cleanup_resources() {
       fi
   fi
 
-  # Delete application
   log_info "Deleting application: $CE_PROJECT_NAME"
   if [[ "$DRY_RUN" == true ]]; then
     echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would delete application: $CE_PROJECT_NAME"
@@ -662,7 +725,6 @@ cleanup_resources() {
     fi
   fi
 
-  # Delete registry secret
   log_info "Deleting registry secret: $REGISTRY_SECRET_NAME"
   if [[ "$DRY_RUN" == true ]]; then
     echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would delete registry secret: $REGISTRY_SECRET_NAME"
@@ -678,9 +740,7 @@ cleanup_resources() {
     fi
   fi
 
-  # Get container namespace for image deletion
   get_container_namespace
-  # Delete container image
   if [[ -n "${CONTAINER_NAMESPACE:-}" ]]; then
     log_info "Deleting container image: $CONTAINER_NAMESPACE/$IMAGE_NAME"
     if [[ "$DRY_RUN" == true ]]; then
@@ -698,7 +758,6 @@ cleanup_resources() {
     fi
   fi
 
-  # Cleanup Orchestrate environment
   log_info "Cleaning up Orchestrate environment: $ORCHESTRATE_ENV_NAME"
   if [[ "$DRY_RUN" == true ]]; then
     echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would cleanup Orchestrate environment: $ORCHESTRATE_ENV_NAME"
@@ -706,6 +765,7 @@ cleanup_resources() {
     if command -v orchestrate &>/dev/null; then
       if orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME"; then
         undeploy_agents
+        remove_agents
         if ! execute orchestrate env remove -n "$ORCHESTRATE_ENV_NAME" --force; then
             log_warn "Failed to delete Orchestrate environment: $ORCHESTRATE_ENV_NAME"
         else
@@ -736,7 +796,6 @@ run_all() {
      log_info "=== Full Deployment Complete ==="
  }
 
-# Global array for arguments that are not options
 REMAINING_ARGS=()
 
 show_help() {
@@ -760,9 +819,11 @@ FUNCTIONS:
     deploy_application            Deploy application to Code Engine
     wait_for_deployment           Wait for deployment to complete
     test_endpoints                Test deployed endpoints
-    setup_orchestrate             Set up Orchestrate environment
+    setup_orchestrate             Set up Orchestrate environment, import and deploy agents
+    import_agents                 Import agents to Orchestrate
     deploy_agents                 Deploy agents to Orchestrate
     undeploy_agents               Undeploy agents from Orchestrate
+    remove_agents                 Remove agents from Orchestrate
     cleanup_resources             Remove all deployed resources
     run_all                       Run all deployment steps (default)
 
@@ -811,8 +872,8 @@ parse_args() {
 
 main() {
     check_requirements
+    generate_agent_deployment_order
 
-    # Parse command line arguments
     parse_args "$@"
 
     if [[ "$SHOW_HELP" == true ]]; then
@@ -820,7 +881,6 @@ main() {
         exit 0
     fi
 
-    # Set positional parameters to the remaining arguments
     if [[ ${#REMAINING_ARGS[@]} -gt 0 ]]; then
         set -- "${REMAINING_ARGS[@]}"
     else
@@ -847,5 +907,4 @@ main() {
     fi
 }
 
-# --- Main execution ---
 main "$@"

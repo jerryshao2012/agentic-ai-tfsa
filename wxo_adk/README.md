@@ -66,117 +66,71 @@
    orchestrate models list
    ```
 
-2. Deployment steps
+3. Deployment with the `deploy.sh` Script
 
-   Project structure:
+   A `deploy.sh` script is provided to automate the setup, import, deployment, and cleanup of your Orchestrate environment.
+
+   **Key Features of the Deployment Script:**
+   *   **Dynamic Agent Discovery**: The script automatically scans the `agents/` directory for all `*.yaml` files. You no longer need to manually edit the script to add or remove agents.
+   *   **Dependency-Aware Deployment**: It analyzes dependencies between agents by checking for a `collaborators` field in the YAML files. This ensures that base agents are imported and deployed *before* the agents that depend on them. Cleanup is performed in the correct reverse order.
+
+   #### Script Usage
+
+   1.  **Make the script executable:**
+       ```shell
+       chmod +x deploy.sh
+       ```
+
+   2.  **Run the full setup (Recommended):**
+       This command runs all steps: sets up the environment, imports tools, and then imports and deploys all agents in the correct dependency order.
+       ```shell
+       ./deploy.sh
+       ```
+
+   3.  **Run specific functions:**
+       You can also run individual functions for more granular control.
+
+       *   **Import Agents**: Imports all agents from the `agents` directory in dependency order.
+           ```shell
+           ./deploy.sh import_agents
+           ```
+
+       *   **Deploy Agents**: Deploys all previously imported agents in dependency order.
+           ```shell
+           ./deploy.sh deploy_agents
+           ```
+
+       *   **Undeploy Agents**: Undeploys all agents in reverse dependency order.
+           ```shell
+           ./deploy.sh undeploy_agents
+           ```
+
+       *   **Remove Agents**: Removes all agents from Orchestrate in reverse dependency order.
+           ```shell
+           ./deploy.sh remove_agents
+           ```
+
+       *   **Cleanup Resources**: Undeploys and removes all agents. Note: This does *not* remove the tools or the environment itself.
+           ```shell
+           ./deploy.sh cleanup_resources
+           ```
+
+       For a full list of available functions, run `./deploy.sh --help`.
+
+4. Test in the watsonx Orchestrate chat UI
+
+   After running the deployment script, the agents will be available in the watsonx Orchestrate chat UI.
+   
+   Test FAQs
    ```text
-   wxo_adk/
-   ├── agents/
-   │   ├── tfsa_calculation_agent.yaml
-   │   ├── tfsa_orchestrator_agent.yaml
-   │   ├── tfsa_policy_agent.yaml
-   │   ├── tfsa_transaction_agent.yaml
-   ├── tools/
-   │   ├── requirements.txt
-   │   ├── tavily_search.yaml.example
-   │   ├── tools.py
-   ├── .env.example
-   ├── demo.png
-   ├── README.md
+   What are the annual dollar limits for each year of TSFA?
+   What are the annual dollar limits for each year of TSFA including 2025?
+   What are the overcontribution penalty policies?
+   What are withdrawal rules?
+   I want to contribute to my TFSA
+   My user ID is user_123. What is my contribution room for 2025?
+   Yes, I want to contribute $2000
    ```
 
-   1. Importing connections (Connection in reserved TechZone itz-watsonx-event-006 is not working. Omit this step.)
-      1. Create a connection yaml file:
-      ```yaml
-      spec_version: v1
-      kind: connection
-      app_id: tavily_search
-      environments:
-          draft:
-              kind: api_key
-              type: team
-              api_key: <tavily_search_api_key>
-              server_url: https://nan.com/
-          live:
-            kind: api_key
-            type: team
-            api_key: <tavily_search_api_key>
-            server_url: https://nan.com/
-      ```
-      2. Import the connection 
-      ```shell
-      orchestrate connections import --file tavily_search.yaml
-      ```
-
-   2. Import tools with its requirements to agent
-      
-      Connection in reserved TechZone itz-watsonx-event-006 is not working. Avoid using it, use itz-watsonx-event-004 instead:
-      ```shell
-      orchestrate tools import -k python -r "requirements.txt" -f "tools.py"
-      ```
-      Note: for backup
-      ```shell
-      orchestrate tools import -k python -r "requirements.txt" -f "tools.py" --app-id tavily_search
-      ```
-   
-      Note: use below command to renew a token to access watsonx Orchestrate
-      ```shell
-      orchestrate env activate watsonx-challenge --api-key <your_api_key>
-      ```
-      Note: Remove tools
-      ```shell
-      orchestrate tools remove -n search_cra_tfsa_policy
-      ```
-
-   3. Import, Deploy, and Cleanup Agents
-
-      A `deploy.sh` script is provided to automate the import, deployment, and cleanup of agents.
-
-      *   **Full Setup (Recommended)**: To run the entire setup process, including environment setup, tool import, agent import, and agent deployment, run:
-          ```shell
-          ./deploy.sh
-          ```
-
-      *   **Import Agents**: If you only want to import the agents, run:
-          ```shell
-          ./deploy.sh import_agents
-          ```
-
-      *   **Deploy Agents**: To deploy the agents after they have been imported, run:
-          ```shell
-          ./deploy.sh deploy_agents
-          ```
-
-      *   **Undeploy Agents**: To undeploy the agents, run:
-          ```shell
-          ./deploy.sh undeploy_agents
-          ```
-
-      *   **Cleanup Resources**: To undeploy and remove all agents, run:
-          ```shell
-          ./deploy.sh cleanup_resources
-          ```
-
-    Note: Download existing Agent
-    ```shell
-    orchestrate agents export -n tfsa_calculation_agent -k external -o tfsa_calculation_agent.yaml --agent-only
-    orchestrate agents export -n tfsa_calculation_agent -k external -o tfsa_calculation_agent.zip
-    ```
-
-   4. Test in the watsonx Orchestrate chat UI
-
-      After running the deployment script, the agents will be available in the watsonx Orchestrate chat UI.
-   
-      Test FAQs
-      ```text
-      What are the annual dollar limits for each year of TSFA?
-      What are the annual dollar limits for each year of TSFA including 2025?
-      What are the overcontribution penalty policies?
-      What are withdrawal rules?
-      I want to contribute to my TFSA
-      My user ID is user_123. What is my contribution room for 2025?
-      Yes, I want to contribute $2000
-      ```
-
-3. Testing
+5. Testing
 ![TFSA Agent Demo](demo.png)

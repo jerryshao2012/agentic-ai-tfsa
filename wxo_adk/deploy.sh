@@ -12,6 +12,8 @@ readonly SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null 
 
 # Global variables
 DRY_RUN=false
+AGENT_FILES_ORDERED=()
+AGENT_FILES_REVERSED=()
 
 # ANSI color codes
 readonly COLOR_RESET='\033[0m'
@@ -51,25 +53,64 @@ check_requirements() {
         exit 1
     fi
 
-    # Load environment variables from .env file in the same directory as the script
     local ENV_FILE="${SCRIPT_DIR}/../.env"
     if [[ -f "$ENV_FILE" ]]; then
-        log_info "Loading environment variables from $ENV_FILE"
-        # shellcheck source=.env
+        log_info "Loading and exporting environment variables from $ENV_FILE"
         source "$ENV_FILE"
     else
-        log_error "$ENV_FILE file not found. Please create one with the required WO_INSTANCE variable."
+        log_error "$ENV_FILE file not found. Please create one with the required WO_INSTANCE and WO_API_KEY variables."
         exit 1
     fi
 
-    if [[ -z "${WO_INSTANCE:-}" ]]; then
-        log_error "WO_INSTANCE is not set in the .env file. This is required to create the environment."
+    if [[ -z "${WO_INSTANCE:-}" || -z "${WO_API_KEY:-}" ]]; then
+        log_error "WO_INSTANCE and WO_API_KEY must be set in the .env file. Please check the file for formatting issues (e.g., extra spaces, special characters, or incorrect quoting)."
         exit 1
     fi
 }
 
+generate_agent_deployment_order() {
+    log_info "Analyzing agent deployment order..."
+    local agents_dir="${SCRIPT_DIR}/agents"
+    if [[ ! -d "$agents_dir" ]]; then
+        log_error "Agents directory not found at '$agents_dir'."
+        exit 1
+    fi
+
+    local all_agent_files=()
+    local base_agents=()
+    local dependent_agents=()
+
+    while IFS= read -r -d $'\0' file; do
+        all_agent_files+=("$file")
+    done < <(find "$agents_dir" -name "*.yaml" -print0)
+
+    if [[ ${#all_agent_files[@]} -eq 0 ]]; then
+        log_warn "No agent YAML files found in $agents_dir."
+        return
+    fi
+
+    for agent_file in "${all_agent_files[@]}"; do
+        if grep -q -E '^\s*collaborators:' "$agent_file"; then
+            dependent_agents+=("$agent_file")
+        else
+            base_agents+=("$agent_file")
+        fi
+    done
+
+    AGENT_FILES_ORDERED=("${base_agents[@]}" "${dependent_agents[@]}")
+
+    for ((i=${#AGENT_FILES_ORDERED[@]}-1; i>=0; i--)); do
+        AGENT_FILES_REVERSED+=("${AGENT_FILES_ORDERED[i]}")
+    done
+
+    log_info "Agent deployment order determined:"
+    for file in "${AGENT_FILES_ORDERED[@]}"; do
+        log_info "  -> $(basename "$file")"
+    done
+}
+
 setup_environment() {
-    log_info "Setting up Orchestrate environment: '$ORCHESTRATE_ENV_NAME'..."
+    log_info "Setting up and activating Orchestrate environment: '$ORCHESTRATE_ENV_NAME'..."
 
     # Ensure WO_INSTANCE is available, as this function depends on it.
     if [[ -z "${WO_INSTANCE:-}" ]]; then
@@ -111,11 +152,14 @@ setup_environment() {
         fi
     fi
     log_info "Environment setup complete. Current environments:"
+
+    log_info "Environment setup and activation complete. Current environments:"
     execute orchestrate env list
 }
 
 import_tools() {
     log_info "Importing tools..."
+    setup_environment # Ensure environment is active
     local tools_dir="${SCRIPT_DIR}/tools"
     if [[ ! -d "$tools_dir" ]]; then
         log_error "Tools directory not found at '$tools_dir'."
@@ -130,56 +174,38 @@ import_tools() {
 }
 
 import_agents() {
-    log_info "Importing agents..."
-    local agents_dir="${SCRIPT_DIR}/agents"
-    if [[ ! -d "$agents_dir" ]]; then
-        log_error "Agents directory not found at '$agents_dir'."
-        exit 1
+    log_info "Importing agents in dependency order..."
+    setup_environment # Ensure environment is active
+    if [[ ${#AGENT_FILES_ORDERED[@]} -eq 0 ]]; then
+        log_warn "No agent files found to import."
+        return
     fi
 
-    local agents_to_import=(
-        "tfsa_policy_agent.yaml"
-        "tfsa_calculation_agent.yaml"
-        "tfsa_transaction_agent.yaml"
-        "tfsa_orchestrator_agent.yaml"
-    )
-
-    for agent_file in "${agents_to_import[@]}"; do
-        local agent_path="${agents_dir}/${agent_file}"
-        if [[ -f "$agent_path" ]]; then
-            log_info "Importing agent: $agent_file"
-            if ! execute orchestrate agents import -f "$agent_path"; then
-                log_warn "Failed to import agent from '$agent_path', continuing..."
+    for agent_file in "${AGENT_FILES_ORDERED[@]}"; do
+        if [[ -f "$agent_file" ]]; then
+            log_info "Importing agent: $(basename "$agent_file")"
+            if ! execute orchestrate agents import -f "$agent_file"; then
+                log_warn "Failed to import agent from '$(basename "$agent_file")', continuing..."
             fi
         else
-            log_warn "Agent file not found, skipping: $agent_path"
+            log_warn "Agent file not found, skipping: $agent_file"
         fi
     done
     log_info "Agent import process complete."
 }
 
 deploy_agents() {
-    log_info "Deploying agents..."
-    local agents_dir="${SCRIPT_DIR}/agents"
-    if [[ ! -d "$agents_dir" ]]; then
-        log_error "Agents directory not found at '$agents_dir'."
-        exit 1
+    log_info "Deploying agents in dependency order..."
+    setup_environment # Ensure environment is active
+    if [[ ${#AGENT_FILES_ORDERED[@]} -eq 0 ]]; then
+        log_warn "No agent files found to deploy."
+        return
     fi
 
-    # Agents are deployed in order of dependency.
-    # Collaborator agents first, then the orchestrator agent.
-    local agents_to_deploy=(
-        "tfsa_policy_agent.yaml"
-        "tfsa_calculation_agent.yaml"
-        "tfsa_transaction_agent.yaml"
-        "tfsa_orchestrator_agent.yaml"
-    )
-
-    for agent_file in "${agents_to_deploy[@]}"; do
-        local agent_path="${agents_dir}/${agent_file}"
-        if [[ -f "$agent_path" ]]; then
+    for agent_file in "${AGENT_FILES_ORDERED[@]}"; do
+        if [[ -f "$agent_file" ]]; then
             local agent_name
-            agent_name=$(grep -E '^\s*name:' "$agent_path" | sed -e 's/^\s*name:\s*//' -e 's/"//g' -e "s/'//g" | tr -d '[:space:]')
+            agent_name=$(grep -E '^\s*name:' "$agent_file" | sed -e 's/^\s*name:\s*//' -e 's/"//g' -e "s/'//g" | tr -d '[:space:]')
 
             if [[ -n "$agent_name" ]]; then
                 log_info "Deploying agent: $agent_name"
@@ -187,37 +213,27 @@ deploy_agents() {
                     log_warn "Failed to deploy agent '$agent_name', continuing..."
                 fi
             else
-                log_warn "Could not determine name for agent in '$agent_file'. Skipping."
+                log_warn "Could not determine name for agent in '$(basename "$agent_file")'. Skipping."
             fi
         else
-            log_warn "Agent file not found, skipping: $agent_path"
+            log_warn "Agent file not found, skipping: $agent_file"
         fi
     done
     log_info "Agent deployment process complete."
 }
 
 undeploy_agents() {
-    log_info "Undeploying agents..."
-    local agents_dir="${SCRIPT_DIR}/agents"
-    if [[ ! -d "$agents_dir" ]]; then
-        log_error "Agents directory not found at '$agents_dir'."
-        exit 1
+    log_info "Undeploying agents in reverse dependency order..."
+    setup_environment # Ensure environment is active
+    if [[ ${#AGENT_FILES_REVERSED[@]} -eq 0 ]]; then
+        log_warn "No agent files found to undeploy."
+        return
     fi
 
-    # Agents are undeployed in reverse order of dependency.
-    # Orchestrator agent first, then the collaborator agents.
-    local agents_to_undeploy=(
-        "tfsa_orchestrator_agent.yaml"
-        "tfsa_transaction_agent.yaml"
-        "tfsa_calculation_agent.yaml"
-        "tfsa_policy_agent.yaml"
-    )
-
-    for agent_file in "${agents_to_undeploy[@]}"; do
-        local agent_path="${agents_dir}/${agent_file}"
-        if [[ -f "$agent_path" ]]; then
+    for agent_file in "${AGENT_FILES_REVERSED[@]}"; do
+        if [[ -f "$agent_file" ]]; then
             local agent_name
-            agent_name=$(grep -E '^\s*name:' "$agent_path" | sed -e 's/^\s*name:\s*//' -e 's/"//g' -e "s/'//g" | tr -d '[:space:]')
+            agent_name=$(grep -E '^\s*name:' "$agent_file" | sed -e 's/^\s*name:\s*//' -e 's/"//g' -e "s/'//g" | tr -d '[:space:]')
 
             if [[ -n "$agent_name" ]]; then
                 log_info "Undeploying agent: $agent_name"
@@ -225,39 +241,29 @@ undeploy_agents() {
                     log_warn "Failed to undeploy agent '$agent_name', continuing..."
                 fi
             else
-                log_warn "Could not determine name for agent in '$agent_file'. Skipping."
+                log_warn "Could not determine name for agent in '$(basename "$agent_file")'. Skipping."
             fi
         else
-            log_warn "Agent file not found, skipping: $agent_path"
+            log_warn "Agent file not found, skipping: $agent_file"
         fi
     done
     log_info "Agent undeployment process complete."
 }
 
-cleanup_resources() {
-    log_info "=== Cleaning up Orchestrate Resources ==="
-    # Ensure the environment is active to issue 'agents remove' commands
-    setup_environment
+remove_agents() {
+    log_info "Removing agents in reverse dependency order..."
+    setup_environment # Ensure environment is active
+    if [[ ${#AGENT_FILES_REVERSED[@]} -eq 0 ]]; then
+        log_warn "No agents to remove."
+        return
+    fi
 
-    undeploy_agents
-
-    local agents_dir="${SCRIPT_DIR}/agents"
-    local agents_to_remove=(
-        "tfsa_orchestrator_agent.yaml"
-        "tfsa_transaction_agent.yaml"
-        "tfsa_calculation_agent.yaml"
-        "tfsa_policy_agent.yaml"
-    )
-
-    log_info "Removing agents..."
-    for agent_file in "${agents_to_remove[@]}"; do
-        local agent_path="${agents_dir}/${agent_file}"
-        if [[ -f "$agent_path" ]]; then
-            # Extract name and kind from the YAML file using grep and sed for portability
+    for agent_file in "${AGENT_FILES_REVERSED[@]}"; do
+        if [[ -f "$agent_file" ]]; then
             local agent_name
-            agent_name=$(grep -E '^\s*name:' "$agent_path" | sed -e 's/^\s*name:\s*//' -e 's/"//g' -e "s/'//g" | tr -d '[:space:]')
+            agent_name=$(grep -E '^\s*name:' "$agent_file" | sed -e 's/^\s*name:\s*//' -e 's/"//g' -e "s/'//g" | tr -d '[:space:]')
             local agent_kind
-            agent_kind=$(grep -E '^\s*kind:' "$agent_path" | sed -e 's/^\s*kind:\s*//' -e 's/"//g' -e "s/'//g" | tr -d '[:space:]')
+            agent_kind=$(grep -E '^\s*kind:' "$agent_file" | sed -e 's/^\s*kind:\s*//' -e 's/"//g' -e "s/'//g" | tr -d '[:space:]')
 
             if [[ -n "$agent_name" && -n "$agent_kind" ]]; then
                 log_info "Removing agent: '$agent_name' (kind: $agent_kind)"
@@ -265,12 +271,20 @@ cleanup_resources() {
                     log_warn "Could not remove agent '$agent_name'. It might not exist or an error occurred."
                 fi
             else
-                log_warn "Could not determine name and kind for agent in '$agent_file'. Skipping."
+                log_warn "Could not determine name and kind for agent in '$(basename "$agent_file")'. Skipping."
             fi
         else
-            log_warn "Agent file not found, skipping: $agent_path"
+            log_warn "Agent file not found, skipping: $agent_file"
         fi
     done
+    log_info "Agent removal process complete."
+}
+
+cleanup_resources() {
+    log_info "=== Cleaning up Orchestrate Resources ==="
+    setup_environment
+    undeploy_agents
+    remove_agents
 
     log_info "Skipping tool removal. Please remove tools manually if needed (e.g., 'orchestrate tools remove -n search_cra_tfsa_policy')."
     log_info "The environment '$ORCHESTRATE_ENV_NAME' was NOT removed. You can remove it manually with:"
@@ -307,6 +321,7 @@ FUNCTIONS:
     import_agents       Imports agents from the 'agents' directory.
     deploy_agents       Deploys imported agents.
     undeploy_agents     Undeploys agents.
+    remove_agents       Removes agents from Orchestrate.
     cleanup_resources   Undeploys and removes imported agents.
 
 If no function is specified, 'run_all' is executed.
@@ -316,7 +331,6 @@ EOF
 main() {
     local func_to_run="run_all"
 
-    # Parse arguments
     while [[ $# -gt 0 ]]; do
         case $1 in
             -h|--help)
@@ -328,7 +342,6 @@ main() {
                 shift
                 ;;
             *)
-                # Assume it's a function name
                 if declare -f "$1" > /dev/null; then
                     func_to_run="$1"
                     shift
@@ -342,6 +355,7 @@ main() {
     done
 
     check_requirements
+    generate_agent_deployment_order
 
     if [[ "$DRY_RUN" == true ]]; then
         log_info "=== ${COLOR_BOLD}DRY RUN MODE ENABLED${COLOR_RESET} ==="
