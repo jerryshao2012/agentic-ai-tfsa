@@ -224,11 +224,12 @@ deploy_agents() {
 
 undeploy_agents() {
     log_info "Undeploying agents in reverse dependency order..."
-    setup_environment # Ensure environment is active
     if [[ ${#AGENT_FILES_REVERSED[@]} -eq 0 ]]; then
         log_warn "No agent files found to undeploy."
         return
     fi
+
+    setup_environment # Ensure environment is active
 
     for agent_file in "${AGENT_FILES_REVERSED[@]}"; do
         if [[ -f "$agent_file" ]]; then
@@ -252,11 +253,12 @@ undeploy_agents() {
 
 remove_agents() {
     log_info "Removing agents in reverse dependency order..."
-    setup_environment # Ensure environment is active
     if [[ ${#AGENT_FILES_REVERSED[@]} -eq 0 ]]; then
         log_warn "No agents to remove."
         return
     fi
+
+    setup_environment # Ensure environment is active
 
     for agent_file in "${AGENT_FILES_REVERSED[@]}"; do
         if [[ -f "$agent_file" ]]; then

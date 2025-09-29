@@ -495,71 +495,92 @@ generate_agent_deployment_order() {
     done
 }
 
-setup_orchestrate() {
-  log_info "10. Setting up and activating Orchestrate environment: '$ORCHESTRATE_ENV_NAME'..."
+setup_orchestrate_environment() {
+    log_info "Setting up and activating Orchestrate environment: '$ORCHESTRATE_ENV_NAME'..."
 
-  if [[ -z "${PUBLIC_URL:-}" ]]; then
-      if [[ "$DRY_RUN" == false ]]; then
-          wait_for_deployment
-      else
-          echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would ensure PUBLIC_URL is set before setting up orchestrate."
-          PUBLIC_URL="https://dry-run-example-url.example.com"
-      fi
-  fi
+    # Ensure WO_INSTANCE is available, as this function depends on it.
+    if [[ -z "${WO_INSTANCE:-}" ]]; then
+        log_error "WO_INSTANCE is not set. Please ensure it is in your .env file."
+        exit 1
+    fi
 
-  if [[ "$DRY_RUN" == true ]]; then
-      echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would check for orchestrate CLI"
-      echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would simulate orchestrate environment setup"
-      return 0
-  fi
+    # Check if environment already exists
+    if [[ "$DRY_RUN" == true ]]; then
+        log_info "[DRY-RUN] Would check if environment '$ORCHESTRATE_ENV_NAME' exists."
+        # Assume it doesn't exist for dry-run to show creation logic
+        log_info "Environment setup complete [Dry Run]."
+        return
+    else
+        env_exists=$(orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME" && echo "true" || echo "false")
+    fi
 
-  # Ensure WO_INSTANCE is available, as this function depends on it.
-  if [[ -z "${WO_INSTANCE:-}" ]]; then
-      log_error "WO_INSTANCE is not set. Please ensure it is in your .env file."
-      exit 1
-  fi
-
-  if command -v orchestrate &>/dev/null; then
-      # Check if environment already exists
-      env_exists=$(orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME" && echo "true" || echo "false")
-
-      if [[ "$env_exists" == "true" ]]; then
-          log_info "Environment '$ORCHESTRATE_ENV_NAME' already exists. Checking URL..."
-          local env_line
-          env_line=$(orchestrate env list | grep "$ORCHESTRATE_ENV_NAME")
-          if [[ "$env_line" != *"$WO_INSTANCE"* ]]; then
-              log_info "Environment '$ORCHESTRATE_ENV_NAME' URL does not match. Updating URL..."
-              if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --activate; then
-                  log_error "Failed to update environment '$ORCHESTRATE_ENV_NAME'."
-                  exit 1
-             fi
-          else
-             log_info "Environment '$ORCHESTRATE_ENV_NAME' already exists with correct URL. Activating it..."
-             if ! execute orchestrate env activate "$ORCHESTRATE_ENV_NAME"; then
+    if [[ "$env_exists" == "true" ]]; then
+        log_info "Environment '$ORCHESTRATE_ENV_NAME' already exists. Checking URL..."
+        local env_line
+        env_line=$(orchestrate env list | grep "$ORCHESTRATE_ENV_NAME")
+        if [[ "$env_line" != *"$WO_INSTANCE"* ]]; then
+            log_info "Environment '$ORCHESTRATE_ENV_NAME' URL does not match. Updating URL..."
+            if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --activate; then
+                log_error "Failed to update environment '$ORCHESTRATE_ENV_NAME'."
+                exit 1
+            fi
+        else
+            log_info "Environment '$ORCHESTRATE_ENV_NAME' already exists with correct URL. Activating it..."
+            if ! execute orchestrate env activate "$ORCHESTRATE_ENV_NAME"; then
                 log_error "Failed to activate environment '$ORCHESTRATE_ENV_NAME'."
                 exit 1
-             fi
-          fi
-      else
-          log_info "Environment '$ORCHESTRATE_ENV_NAME' not found. Creating and activating it..."
-          if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --activate; then
-              log_error "Failed to create and activate environment '$ORCHESTRATE_ENV_NAME'."
-              exit 1
-          fi
-      fi
+            fi
+        fi
+    else
+        log_info "Environment '$ORCHESTRATE_ENV_NAME' not found. Creating and activating it..."
+        if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --activate; then
+            log_error "Failed to create and activate environment '$ORCHESTRATE_ENV_NAME'."
+            exit 1
+        fi
+    fi
+    log_info "Environment setup complete. Current environments:"
 
-      if orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME"; then
-          import_agents
-          deploy_agents
-      else
-          log_error "Environment $ORCHESTRATE_ENV_NAME not available after setup"
-          exit 1
-      fi
+    log_info "Environment setup and activation complete. Current environments:"
+    execute orchestrate env list
+}
 
-      orchestrate env list
-  else
-    log_info "Orchestrate CLI not found, skipping environment setup"
-  fi
+setup_orchestrate() {
+    log_info "10. Setting up and activating Orchestrate environment: '$ORCHESTRATE_ENV_NAME'..."
+
+    if [[ -z "${PUBLIC_URL:-}" ]]; then
+        if [[ "$DRY_RUN" == false ]]; then
+            wait_for_deployment
+        else
+            echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would ensure PUBLIC_URL is set before setting up orchestrate."
+            PUBLIC_URL="https://dry-run-example-url.example.com"
+        fi
+    fi
+
+    if [[ "$DRY_RUN" == true ]]; then
+        echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would check for orchestrate CLI"
+        echo -e "${COLOR_CYAN}[DRY-RUN]${COLOR_RESET} Would simulate orchestrate environment setup"
+        return 0
+    fi
+
+    # Ensure WO_INSTANCE is available, as this function depends on it.
+    if [[ -z "${WO_INSTANCE:-}" ]]; then
+        log_error "WO_INSTANCE is not set. Please ensure it is in your .env file."
+        exit 1
+    fi
+
+    if command -v orchestrate &>/dev/null; then
+        setup_orchestrate_environment
+
+        if orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME"; then
+            import_agents
+            deploy_agents
+        else
+            log_error "Environment $ORCHESTRATE_ENV_NAME not available after setup"
+            exit 1
+        fi
+    else
+        log_info "Orchestrate CLI not found, skipping environment setup"
+    fi
 }
 
 import_agents() {
@@ -568,6 +589,8 @@ import_agents() {
         log_warn "No agent files found to import."
         return
     fi
+
+    setup_orchestrate_environment # Ensure environment is active
 
     for agent_file in "${AGENT_FILES_ORDERED[@]}"; do
         if [[ -f "$agent_file" ]]; then
@@ -588,6 +611,8 @@ deploy_agents() {
         log_warn "No agent files found to deploy."
         return
     fi
+
+    setup_orchestrate_environment # Ensure environment is active
 
     for agent_file in "${AGENT_FILES_ORDERED[@]}"; do
         if [[ -f "$agent_file" ]]; then
@@ -616,6 +641,8 @@ undeploy_agents() {
         return
     fi
 
+    setup_orchestrate_environment # Ensure environment is active
+
     for agent_file in "${AGENT_FILES_REVERSED[@]}"; do
         if [[ -f "$agent_file" ]]; then
             local agent_name
@@ -642,6 +669,8 @@ remove_agents() {
         log_warn "No agents to remove."
         return
     fi
+
+    setup_orchestrate_environment # Ensure environment is active
 
     for agent_file in "${AGENT_FILES_REVERSED[@]}"; do
         if [[ -f "$agent_file" ]]; then
