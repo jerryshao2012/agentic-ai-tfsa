@@ -4,17 +4,17 @@ display_name: Connect to TFSA External Agent
 description: Connect with a collaborator, `TFSA_External_LangGraph_Agent`, to answer
   user queries for Tax-Free Savings Accounts (TFSAs)
 context_access_enabled: true
-context_variables: []
+context_variables: [ ]
 llm: watsonx/meta-llama/llama-3-2-90b-vision-instruct
 style: default
 instructions: '1. Invoke the collaborator `TFSA_External_LangGraph_Agent` to get the answer for the use''s question about the Tax-Free Savings Accounts (TFSAs).
 2. Provide an answer to the user using a professional but conversational tone based on the response from the collaborator `TFSA_External_LangGraph_Agent`.
 3. Never expose internal collaborator names or reasoning steps.'
-guidelines: []
+guidelines: [ ]
 collaborators:
-- TFSA_External_LangGraph_Agent
-tools: []
-knowledge_base: []
+  - TFSA_External_LangGraph_Agent
+tools: [ ]
+knowledge_base: [ ]
 chat_with_docs:
   enabled: false
   vector_index:

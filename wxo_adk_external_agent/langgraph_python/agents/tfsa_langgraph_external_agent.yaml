@@ -5,11 +5,11 @@ title: TFSA LangGraph External Agent
 nickname: TFSA_External_LangGraph_Agent
 provider: external_chat
 description: 'An agent greets customers, identifies Tax-Free Savings Accounts (TFSAs)-related intents, and delivers real-time, CRA-compliant guidance and transaction support.'
-api_url: https://tfsa-agent-app-project.1zwn3ksrr28x.us-south.codeengine.appdomain.cloud/api/v1/chat/completions
+api_url: https://tfsa-agent-app-project.216sx71u2gj9.us-south.codeengine.appdomain.cloud/api/v1/chat/completions
 auth_scheme: NONE
-auth_config: {}
+auth_config: { }
 context_access_enabled: true
-context_variables: []
+context_variables: [ ]
 chat_params:
   messages:
     - role: user
