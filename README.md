@@ -105,7 +105,7 @@ The system uses an MCP (Modular, Composable, Pluggable) architecture with:
 ```bash
 # Clone repository
 git clone https://github.ibm.com/Jerry-Shao/agentic-ai-tfsa.git
-cd banking-assistant
+cd agentic-ai-tfsa
 
 # Install dependencies
 pip install -r requirements.txt
