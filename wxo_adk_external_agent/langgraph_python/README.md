@@ -9,7 +9,7 @@ For official watsonx Orchestrate Agent Development Kit (ADK) documentation, refe
 ## Overview
 
 This TFSA implementation demonstrates how to deploy an external agent as a serverless application in IBM Cloud. The application leverages 
-[FastAPI](https://fastapi.tiangolo.com) and [LangGraph](https://www.langchain.com/langgraph) to create a chat completion service that integrates with Ollama, Deepseek, IBM watsonx and OpenAI models. It also includes AI tool for TFSA policy search using [Tavily API](https://www.tavily.com).
+[FastAPI](https://fastapi.tiangolo.com) and [LangGraph](https://www.langchain.com/langgraph) to create a chat completion service that integrates with Ollama, Deepseek, IBM watsonx and OpenAI models. It also includes AI tool for TFSA policy search using [Tavily API](https://www.tavily.com). The system uses multiple specialized agents working together to provide comprehensive assistance to users regarding their TFSA accounts.
 
 The API is designed to be used with IBM watsonx Orchestrate, but can be used independently as well. It must have an [OpenAI-compatible Assistants API endpoint](https://wxo-agent-tfsa-app1.1yhdbkea049z.us-south.codeengine.appdomain.cloud/api/v1/docs/). Endpoints **honour `X-IBM-THREAD-ID`** for multi-turn conversations, **stream via SSE** when `stream=true`. Both stream and non-stream must be implemented.
 
@@ -20,6 +20,11 @@ The API is designed to be used with IBM watsonx Orchestrate, but can be used ind
 - **Tool Integration**: The application includes tool for TFSA policy search using [Tavily API](https://www.tavily.com), which can be invoked during chat interactions.
 - **Token Management**: Implements a caching mechanism for IBM Cloud IAM tokens to optimize authentication processes.
 - **Logging and Debugging**: Logging is set up to facilitate debugging and monitoring of the application.
+- **Caching**: Implements caching to avoid duplicate requests
+- **Streaming**: Supports streaming responses for better user experience
+- **Error Handling**: Comprehensive error handling throughout the workflow
+- **MLflow Integration**: Tracks token usage with MLflow
+- **Multi-Provider LLM Support**: Works with various LLM providers (Watsonx, OpenAI, Ollama, DeepSeek)
 
 Note:
 - In `app.py` that defines the `FastAPI` app object, `selected_tools = [run_tfsa_assistant_sync]` in the `chat_completions` function to enable the tool. Please make sure to update this line to match your tool configuration. the function `chat_completions`. You can choose any Python function for the tool.
@@ -31,6 +36,71 @@ Note:
 
 Please be aware that this example accepts any API Key or Bearer token for authentication. 
 It is recommended to implement your own authentication security measures to ensure proper security.
+
+## Key Components
+
+![TFSA Agent Workflow](tfsa_graph.png)
+
+1. State Management
+
+The workflow uses `AgentState` as its central state object, which contains:
+* User input and profile information
+* Search results
+* TFSA contribution room calculations
+* Messages exchanged between agents
+* Transaction details
+
+3. Specialized Agents
+
+The system has several specialized agents, each with distinct responsibilities:
+
+`profile_agent`
+* Retrieves user profile information from the bank database
+* Initializes the state with user-specific data like age, residency status, past contributions, etc.
+
+`document_agent`
+* Provides knowledge about historical TFSA rules and policies
+* Generates responses based on known TFSA regulations
+* Determines if real-time search is needed for current information
+
+`search_agent`
+* Searches current TFSA policies using external sources (Tavily or DuckDuckGo)
+* Extracts current year contribution limits and other policy information
+* Handles real-time policy verification
+
+`calculation_agent`
+* Calculates available TFSA contribution room based on user profile and policy data
+* Takes into account past contributions, withdrawals, and historical limits
+* Provides user-specific financial calculations
+
+`transaction_agent`
+* Handles TFSA contribution transactions
+* Validates contribution amounts against available room
+* Executes transfers from checking account to TFSA
+
+`response_agent`
+* Synthesizes all information into a coherent, human-readable response
+* Formats the final output for the user
+
+4. Workflow Logic
+
+The workflow follows this process:
+   1. **Entry Point**: Starts with `profile_agent` to gather user information
+   2. **Routing Logic**: Based on user input, the system decides the next steps:
+      * For contribution room inquiries → `calculation_agent`
+      * For transaction requests → `calculation_agent` then `transaction_agent`
+      * For general policy questions → `document_agent`
+   3. Conditional Processing:
+      * If `document_agent` determines real-time search is needed → `search_agent`
+      * After calculations, system may proceed to transaction processing
+   4. Final Response: All paths lead to `response_agent` which formats the final output
+
+5. TFSA Limit Management
+
+The system maintains a comprehensive database of TFSA limits:
+  * Loads historical limits from `tfsa_limits.json`
+  * Automatically searches for and updates missing years' limits
+  * Saves updated limits back to the JSON file
 
 ## Deployment Instructions
 

@@ -10,6 +10,7 @@ langgraph
 langchain
 langchain-mcp-adapters
 streamlit
+mlflow
 
 # For Google OAuth SSO
 flask
