@@ -133,20 +133,21 @@ setup_environment() {
         env_line=$(orchestrate env list | grep "$ORCHESTRATE_ENV_NAME")
         if [[ "$env_line" != *"$WO_INSTANCE"* ]]; then
             log_info "Environment '$ORCHESTRATE_ENV_NAME' URL does not match. Updating URL..."
-            if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --activate; then
+            if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --api-key "$WATSONX_API_KEY" --activate; then
                 log_error "Failed to update environment '$ORCHESTRATE_ENV_NAME'."
                 exit 1
             fi
         else
             log_info "Environment '$ORCHESTRATE_ENV_NAME' already exists with correct URL. Activating it..."
-            if ! execute orchestrate env activate "$ORCHESTRATE_ENV_NAME"; then
+            if ! execute orchestrate env activate "$ORCHESTRATE_ENV_NAME" --api-key "$WATSONX_API_KEY"; then
                 log_error "Failed to activate environment '$ORCHESTRATE_ENV_NAME'."
                 exit 1
             fi
         fi
     else
         log_info "Environment '$ORCHESTRATE_ENV_NAME' not found. Creating and activating it..."
-        if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --activate; then
+        if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --api-key "$WATSONX_API_KEY" --activate; then
+
             log_error "Failed to create and activate environment '$ORCHESTRATE_ENV_NAME'."
             exit 1
         fi

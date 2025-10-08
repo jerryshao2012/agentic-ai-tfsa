@@ -510,10 +510,6 @@ setup_orchestrate() {
 
     if command -v orchestrate &>/dev/null; then
         activate_orchestrate_env
-        if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --activate; then
-            log_error "Failed to create, update, or activate environment '$ORCHESTRATE_ENV_NAME'."
-            exit 1
-        fi
 
         if orchestrate env list | grep -q "$ORCHESTRATE_ENV_NAME"; then
             import_agents
@@ -536,9 +532,9 @@ activate_orchestrate_env() {
     fi
     
     log_info "Activating Orchestrate environment: $ORCHESTRATE_ENV_NAME"
-    if ! orchestrate env activate "$ORCHESTRATE_ENV_NAME"; then
+    if ! orchestrate env activate "$ORCHESTRATE_ENV_NAME" --api-key "$WATSONX_API_KEY"; then
         log_warn "Failed to activate environment '$ORCHESTRATE_ENV_NAME'. Attempting to create and activate..."
-        if ! orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --activate; then
+        if ! orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --api-key "$WATSONX_API_KEY" --activate; then
             log_error "Failed to create and activate environment '$ORCHESTRATE_ENV_NAME'."
             exit 1
         fi
