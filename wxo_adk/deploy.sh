@@ -147,7 +147,6 @@ setup_environment() {
     else
         log_info "Environment '$ORCHESTRATE_ENV_NAME' not found. Creating and activating it..."
         if ! execute orchestrate env add -n "$ORCHESTRATE_ENV_NAME" -u "$WO_INSTANCE" --type ibm_iam --api-key "$WATSONX_API_KEY" --activate; then
-
             log_error "Failed to create and activate environment '$ORCHESTRATE_ENV_NAME'."
             exit 1
         fi

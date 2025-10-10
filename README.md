@@ -8,6 +8,12 @@ The system uses an MCP (Modular, Composable, Pluggable) architecture with:
 - Dedicated clients for each service
 - Streamlit-based chat host for unified access
 
+Additionally, this project includes implementations for [watsonx Orchestrate](https://www.ibm.com/products/watsonx-orchestrate):
+- [wxo_adk](./wxo_adk/README.md) - Native watsonx Orchestrate agent implementation
+- [wxo_adk_external_agent](./wxo_adk_external_agent/langgraph_python/README.md) - External agent implementation using LangGraph
+
+The project also includes detailed documentation in the [docs](./docs) folder with proposals and use cases for both services.
+
 ---
 
 ### File Notes
