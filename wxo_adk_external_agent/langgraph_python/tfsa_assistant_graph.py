@@ -26,6 +26,10 @@ try:
 except ImportError:
     otel = None
 
+# Structured audit logging (tool calls, full LLM prompt/completion, token usage) for
+# CloudWatch -> S3. Agent-agnostic framework; this graph is its first consumer.
+from agent_obs import AuditCallbackHandler, audited_run
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -239,7 +243,10 @@ def _get_json_from_str(json_str: str, fallback_json: dict) -> dict:
     try:
         return json.loads(json_str)
     except (json.JSONDecodeError, ValueError) as e:
-        logging.error(f"JSON parsing failed: {str(e)}")
+        # Recovered below via regex fallbacks, so this is a WARNING, not an ERROR. Log the
+        # raw model output (truncated) — it's the only way to diagnose LLM format drift /
+        # prompt-injection artifacts downstream; the generic exception message alone is useless.
+        logging.warning("JSON parse miss (recovering): %s | raw=%r", e, str(json_str)[:1000])
         try:
             # First, try to extract JSON from Markdown code block
             code_block_match = re.search(r'```(?:json)?\s*({.*?})\s*```', json_str, re.DOTALL)
@@ -969,40 +976,49 @@ def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
         # Execute workflow
         logging.info(f"\n🔹 USER QUERY: '{user_input}'")
         accumulated_state = state.copy()
-        try:
-            for step in graph_app.stream(state):
-                for node, value in step.items():
-                    # Update accumulated state with node value
-                    accumulated_state.update(value)
+        # Audit handler captures every LLM + tool call (full prompt/completion, args, tokens)
+        # as pure-JSON CloudWatch lines. One instance per invocation -> per-run token totals.
+        handler = AuditCallbackHandler(agent="tfsa", thread_id=thread_id,
+                                       user_id=state.get("user_id"))
+        assistant_response_text = "No response generated"
+        with audited_run(handler, user_input=user_input):
+            try:
+                for step in graph_app.stream(state, config={"callbacks": [handler]}):
+                    for node, value in step.items():
+                        # Update accumulated state with node value
+                        accumulated_state.update(value)
 
-                    # Print node output
-                    if 'messages' in value and value['messages']:
-                        msg = value["messages"][-1]
-                        logging.info(f"🔹 [{node.upper()}]: {msg['content']}")
-        except Exception as e:
-            logging.error(f"Error executing workflow: {str(e)}")
-            # Return state with error message
-            state["messages"].append({
-                "role": "system",
-                "content": f"Workflow execution failed: {str(e)}"
-            })
+                        # Print node output
+                        if 'messages' in value and value['messages']:
+                            msg = value["messages"][-1]
+                            logging.info(f"🔹 [{node.upper()}]: {msg['content']}")
+            except Exception as e:
+                logging.error(f"Error executing workflow: {str(e)}")
+                # Return state with error message
+                state["messages"].append({
+                    "role": "system",
+                    "content": f"Workflow execution failed: {str(e)}"
+                })
 
-        # Save thread state
-        if thread_id:
-            thread_cache_key = f"thread_state_{thread_id}"
-            cache.cache(thread_cache_key, accumulated_state)
+            # Save thread state
+            if thread_id:
+                thread_cache_key = f"thread_state_{thread_id}"
+                cache.cache(thread_cache_key, accumulated_state)
 
-        # Extract last assistant message
-        assistant_msgs = [msg['content'] for msg in accumulated_state['messages']
-                          if msg.get('role') == 'assistant']
-        if assistant_msgs:
-            assistant_response_text = f"{assistant_msgs[-1]}".strip()
-            if len(assistant_response_text) <= 0:
-                assistant_response_text = "No response generated"
-        else:
-            assistant_response_text = "No response generated"
+            # Extract last assistant message
+            assistant_msgs = [msg['content'] for msg in accumulated_state['messages']
+                              if msg.get('role') == 'assistant']
+            if assistant_msgs:
+                assistant_response_text = f"{assistant_msgs[-1]}".strip()
+                if len(assistant_response_text) <= 0:
+                    assistant_response_text = "No response generated"
 
-        # Log token usage if MLflow tracing is enabled
+            # Record final output + actual user_id (resolved during the run) for invocation_end.
+            handler.set_user(accumulated_state.get("user_id"))
+            handler.set_output(assistant_response_text)
+
+        # Log token usage if MLflow tracing is enabled (best-effort; the audit handler above
+        # is the authoritative token source in the AgentCore runtime).
         _log_token_usage()
 
         return assistant_response_text, accumulated_state
@@ -1042,10 +1058,11 @@ def _format_resp(struct: dict) -> str:
     return "data: " + json.dumps(struct) + "\n\n"
 
 
-async def _stream_graph_events(graph: CompiledStateGraph, state: dict, queue: asyncio.Queue):
+async def _stream_graph_events(graph: CompiledStateGraph, state: dict, queue: asyncio.Queue,
+                               config: Optional[dict] = None):
     """Streams graph events into a queue and signals completion."""
     try:
-        async for event in graph.astream_events(state, version="v2"):
+        async for event in graph.astream_events(state, version="v2", config=config):
             await queue.put({"type": "graph_event", "event": event})
     except Exception as e:
         logging.error(f"Error during graph execution: {e}", exc_info=True)
@@ -1072,10 +1089,16 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
     """
     start_time = time.time()
     graph_task = None
+    # Audit handler captures every LLM + tool call as pure-JSON CloudWatch lines.
+    handler = AuditCallbackHandler(agent="tfsa", thread_id=thread_id)
+    audit_id = str(uuid.uuid4())
+    audit_started = False
+    audit_status = "success"
 
     try:
         # Check cache first, which also initializes the state dictionary
         cached_response, state = _check_cache_initialize_state(user_input, thread_id)
+        handler.set_user(state.get("user_id"))
         if cached_response:
             # To simulate a real stream, generate a single run ID to use for all chunks.
             run_id = f"run-{uuid.uuid4()}"
@@ -1126,9 +1149,13 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
 
         # --- Heartbeat and Streaming Logic ---
         event_queue = asyncio.Queue()
-        graph_task = asyncio.create_task(_stream_graph_events(graph_app, state, event_queue))
+        graph_task = asyncio.create_task(
+            _stream_graph_events(graph_app, state, event_queue,
+                                 config={"callbacks": [handler]}))
 
         logging.info(f"\n🔹 USER QUERY: '{user_input}'")
+        handler._emit("invocation_start", invocation_id=audit_id, input=user_input)
+        audit_started = True
 
         while True:
             try:
@@ -1211,10 +1238,12 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
         # After the stream is complete, extract the final response from the state.
         # This is necessary for agents that produce a final response without streaming it.
         if final_state:
+            handler.set_user(final_state.get("user_id"))
             assistant_msgs = [msg['content'] for msg in final_state.get('messages', [])
                               if msg.get('role') == 'assistant']
             if assistant_msgs:
                 final_response = assistant_msgs[-1]
+                handler.set_output(final_response)
                 if final_response and final_response != streamed_content:
                     struct = {
                         "id": str(uuid.uuid4()),
@@ -1237,11 +1266,20 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
         yield "data: [DONE]\n\n"
 
     except Exception as e:
+        audit_status = "error"
+        if audit_started:
+            handler._emit("invocation_error", invocation_id=audit_id,
+                          error=str(e), error_type=type(e).__name__)
         logging.error(f"Error in run_tfsa_assistant_stream: {str(e)}", exc_info=True)
         error_message = f"An error occurred while processing your request: {str(e)}"
         yield f"data: {json.dumps({'choices': [{'delta': {'content': error_message}}]})}\n\n"
         yield "data: [DONE]\n\n"
     finally:
+        # Emit the closing audit event with accumulated token totals (skips cached-only runs).
+        if audit_started:
+            handler._emit("invocation_end", invocation_id=audit_id, status=audit_status,
+                          duration_ms=round((time.time() - start_time) * 1000, 1),
+                          token_usage=handler.token_totals, output=handler._output)
         # Clean up background tasks to prevent them from running forever
         if graph_task:
             graph_task.cancel()

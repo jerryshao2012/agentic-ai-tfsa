@@ -1,0 +1,38 @@
+# --- Secrets / credentials ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+aws.json
+credentials
+
+# --- Runtime/agent state (local, ephemeral, may contain user data) ---
+cache/
+*.pkl
+
+# --- AgentCore starter toolkit generated files ---
+.bedrock_agentcore.yaml
+Dockerfile.bedrock_agentcore
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# --- MLflow / logs ---
+mlruns/
+*.log
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/
+
+# claude
+
+.claude/
