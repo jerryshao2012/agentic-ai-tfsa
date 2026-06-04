@@ -20,6 +20,12 @@ import config
 from cache import Cache
 from models import ModelName, DEFAULT_MODEL
 
+# Optional OpenTelemetry support for AWS CloudWatch observability
+try:
+    import otel_utils as otel
+except ImportError:
+    otel = None
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -38,6 +44,22 @@ logging.basicConfig(
 def initialize_llm():
     """Initializes and returns the appropriate LLM based on configuration."""
     provider = config.AI_SERVICES_PROVIDER
+
+    if 'bedrock' in provider:
+        # ChatBedrockConverse uses Bedrock's Converse API, which is required for Amazon Nova
+        # and also works for Anthropic Claude. It streams natively via astream_events.
+        try:
+            from langchain_aws import ChatBedrockConverse
+            return ChatBedrockConverse(
+                model=config.BEDROCK_MODEL_ID,
+                region_name=config.AWS_REGION,
+                temperature=0,
+            )
+        except ImportError:
+            raise ValueError(
+                "Bedrock provider selected but 'langchain[aws]' not installed. "
+                "Run: pip install 'langchain[aws]' bedrock-agentcore"
+            )
 
     if 'ollama' in provider:
         from langchain_ollama import ChatOllama

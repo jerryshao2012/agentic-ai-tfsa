@@ -1,0 +1,30 @@
+# Keep secrets and local state OUT of the container image.
+# The AgentCore-generated Dockerfile copies the whole build context, so this is the
+# guard that prevents .env (and cached user data) from being baked into the image.
+# Secrets are supplied at runtime via launch env_vars + the execution role instead.
+
+# --- Secrets ---
+.env
+.env.*
+*.pem
+*.key
+
+# --- Local/ephemeral runtime state ---
+cache/
+*.pkl
+tfsa_limits.json
+
+# --- AgentCore toolkit config (can reference resource names) ---
+.bedrock_agentcore.yaml
+
+# --- Python cruft / dev-only ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+tests/
+mlruns/
+*.log
+.git/
+.gitignore
+.DS_Store

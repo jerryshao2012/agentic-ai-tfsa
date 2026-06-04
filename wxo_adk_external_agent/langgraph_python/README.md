@@ -102,6 +102,76 @@ The system maintains a comprehensive database of TFSA limits:
   * Automatically searches for and updates missing years' limits
   * Saves updated limits back to the JSON file
 
+## Running on AWS (Amazon Bedrock)
+
+The same agent can run on **Amazon Bedrock** as the LLM provider, either locally or
+deployed to **Bedrock AgentCore Runtime**. The core logic in `tfsa_assistant_graph.py`
+is shared with the watsonx path — only the provider and the deployment wrapper differ.
+
+AWS-specific files (all at the top level, beside the shared modules):
+
+| File | Purpose |
+|------|---------|
+| `tfsa_agentcore.py` | Bedrock AgentCore entrypoint (`/invocations` + `/ping` on :8080) |
+| `deploy_agentcore.py` | Deploys the agent to Bedrock AgentCore Runtime |
+| `test_agent.py` | Invokes the deployed runtime over boto3 |
+| `otel_utils.py` | Optional CloudWatch (OTEL) observability |
+| `requirements_agentcore.txt` | Container requirements for the runtime |
+
+### Prerequisites
+* AWS credentials configured (`aws configure`, env vars, or SSO) with Bedrock access
+* Model access enabled for your `BEDROCK_MODEL_ID` in the target region (Bedrock console)
+* **Docker** running — required only for the deploy step (it builds the container image)
+* Python deps installed:
+  ```bash
+  pip install 'langchain[aws]' bedrock-agentcore bedrock-agentcore-starter-toolkit boto3
+  ```
+
+### Environment Setup
+Add the AWS variables to your `.env` (loaded automatically by `config.py`):
+```shell
+AI_SERVICES_PROVIDER=bedrock
+BEDROCK_MODEL_ID=us.anthropic.claude-haiku-4-5-20251001-v1:0   # cross-region inference profile
+AWS_REGION=us-east-1
+ROUTER_MODE=supervisor                                         # supervisor (LLM routing) or rules
+TAVILY_API_KEY=<tavily_api_key>                                # optional; falls back to DuckDuckGo
+```
+
+### 1. Run locally
+Starts the AgentCore server on `localhost:8080` (uses your AWS creds to call the Bedrock model — nothing is deployed):
+```bash
+python tfsa_agentcore.py
+```
+Invoke it from another terminal:
+```bash
+curl -X POST http://localhost:8080/invocations \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "What are the TFSA dollar limits for each year including 2025?"}'
+```
+Optional payload fields: `"thread_id"` (multi-turn memory) and `"stream": true` (SSE deltas).
+
+> **Port 8080 already in use?** A previous run is still bound to it. Free it with
+> `lsof -ti tcp:8080 | xargs kill`, or run on another port via `PORT=8081 python tfsa_agentcore.py`.
+
+### 2. Deploy to Bedrock AgentCore Runtime
+`deploy_agentcore.py` does not auto-load `.env`, so export it first. The script builds the
+image, pushes to ECR, creates/updates the runtime, enables CloudWatch observability, waits
+for `READY`, and runs smoke tests:
+```bash
+set -a; source .env; set +a
+python deploy_agentcore.py
+```
+Tear down the runtime and its ECR repo when finished:
+```bash
+python deploy_agentcore.py --cleanup
+```
+
+### 3. Invoke the deployed runtime
+```bash
+python test_agent.py "What is the overcontribution penalty?"
+python test_agent.py "I want to contribute \$2000" --thread t1   # multi-turn
+```
+
 ## Deployment Instructions
 
 Reserve the following resources: itz-watsonx-event-004 in https://techzone.ibm.com/

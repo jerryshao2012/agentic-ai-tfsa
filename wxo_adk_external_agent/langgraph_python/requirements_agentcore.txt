@@ -1,0 +1,19 @@
+# Container requirements for hosting the TFSA agent on Bedrock AgentCore Runtime.
+# The entrypoint (tfsa_agentcore.py) imports only tfsa_assistant_graph -> config/cache/models,
+# so no IBM/watsonx or FastAPI deps are needed at import time.
+bedrock-agentcore<=0.1.5
+langgraph
+langchain
+langchain[aws]
+langchain-community
+langchain-core
+langchain-tavily
+duckduckgo-search
+ddgs
+mlflow
+python-dotenv
+boto3
+# Observability: AWS Distro for OpenTelemetry auto-instruments Bedrock/boto3 calls
+# (token usage + latency spans) and exports to CloudWatch GenAI Observability when
+# AGENT_OBSERVABILITY_ENABLED=true.
+aws-opentelemetry-distro

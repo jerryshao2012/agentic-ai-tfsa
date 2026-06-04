@@ -33,6 +33,19 @@ def _create_model_instance(model: str, parm_overrides=None):
 
     provider = config.AI_SERVICES_PROVIDER
 
+    if 'bedrock' in provider:
+        # Converse API client — required for Amazon Nova, compatible with Claude too.
+        try:
+            from langchain_aws import ChatBedrockConverse
+            return ChatBedrockConverse(model=model if model else config.BEDROCK_MODEL_ID,
+                                       region_name=config.AWS_REGION,
+                                       temperature=defaults.get('temperature', 0))
+        except ImportError:
+            raise ValueError(
+                "Bedrock provider selected but 'langchain[aws]' not installed. "
+                "Run: pip install 'langchain[aws]' bedrock-agentcore"
+            )
+
     if 'ollama' in provider:
         from langchain_ollama import ChatOllama
         return ChatOllama(model=model if model else ModelName.ollama_qwen2_5vl_7b,
