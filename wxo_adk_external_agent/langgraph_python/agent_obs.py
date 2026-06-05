@@ -27,6 +27,7 @@ All callbacks are defensively wrapped: an observability failure must never break
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -108,8 +109,48 @@ def _jsonable(obj: Any) -> Any:
     return _truncate(str(obj))
 
 
+def _prompt_text(prompt: Any) -> str:
+    """Flatten a logged prompt (list of message dicts or strings) to a single string."""
+    parts: list[str] = []
+    for item in prompt or []:
+        if isinstance(item, dict):
+            parts.append(str(item.get("content", "")))
+        else:
+            parts.append(str(item))
+    return "\n".join(parts)
+
+
+def _prompt_identity(kwargs: dict, prompt: Any) -> dict:
+    """Extract prompt name/version/role + a content hash for an llm_call_start event.
+
+    Agents tag their LLM calls via LangChain config metadata, e.g.
+    ``llm.invoke(prompt, config={"run_name": "document_agent",
+        "metadata": {"prompt_name": "document_policy_expert",
+                     "prompt_version": "v1", "prompt_role": "system"}})``.
+    The metadata/tags/run name arrive here in callback kwargs. prompt_hash lets you
+    detect prompt drift / injection without diffing full text.
+    """
+    out: dict[str, Any] = {}
+    try:
+        meta = kwargs.get("metadata") or {}
+        if isinstance(meta, dict):
+            for key in ("prompt_name", "prompt_version", "prompt_role"):
+                if meta.get(key) is not None:
+                    out[key] = meta[key]
+        run_name = kwargs.get("name") or kwargs.get("run_name")
+        if run_name:
+            out["run_name"] = run_name
+        out.setdefault("prompt_role", "system")
+        out["prompt_hash"] = hashlib.sha256(
+            _prompt_text(prompt).encode("utf-8", "ignore")).hexdigest()[:12]
+    except Exception as e:  # never break logging over metadata extraction
+        logging.getLogger(__name__).debug("_prompt_identity failed: %s", e)
+    return out
+
+
 def log_event(event_type: str, *, agent: Optional[str] = None, thread_id: Optional[str] = None,
-              user_id: Optional[str] = None, logger: Optional[logging.Logger] = None,
+              user_id: Optional[str] = None, session_id: Optional[str] = None,
+              message_id: Optional[str] = None, logger: Optional[logging.Logger] = None,
               **fields: Any) -> None:
     """Emit a single pure-JSON log line. Never raises."""
     try:
@@ -120,6 +161,8 @@ def log_event(event_type: str, *, agent: Optional[str] = None, thread_id: Option
             "agent": agent,
             "trace_id": trace_id,
             "span_id": span_id,
+            "session_id": session_id,
+            "message_id": message_id,
             "thread_id": thread_id,
             "user_id": user_id,
         }
@@ -155,10 +198,15 @@ class AuditCallbackHandler(BaseCallbackHandler):
     """
 
     def __init__(self, agent: str, thread_id: Optional[str] = None,
-                 user_id: Optional[str] = None):
+                 user_id: Optional[str] = None, session_id: Optional[str] = None,
+                 message_id: Optional[str] = None):
         self.agent = agent
         self.thread_id = thread_id
         self.user_id = user_id
+        # session_id groups many messages in one conversation; message_id identifies a
+        # single request/turn. Both are stamped on EVERY event via _emit().
+        self.session_id = session_id
+        self.message_id = message_id
         self.logger = get_audit_logger()
         self.token_totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         self._output: Optional[str] = None
@@ -175,7 +223,8 @@ class AuditCallbackHandler(BaseCallbackHandler):
 
     def _emit(self, event_type: str, **fields: Any) -> None:
         log_event(event_type, agent=self.agent, thread_id=self.thread_id,
-                  user_id=self.user_id, logger=self.logger, **fields)
+                  user_id=self.user_id, session_id=self.session_id,
+                  message_id=self.message_id, logger=self.logger, **fields)
 
     # -- LLM callbacks -------------------------------------------------------
     def on_chat_model_start(self, serialized, messages, *, run_id=None, parent_run_id=None,
@@ -184,18 +233,20 @@ class AuditCallbackHandler(BaseCallbackHandler):
             self._llm_starts[str(run_id)] = time.time()
             # messages: List[List[BaseMessage]] — flatten the (usually single) batch.
             flat = [m for batch in (messages or []) for m in batch]
+            prompt = [_jsonable(m) for m in flat]
             self._emit("llm_call_start", run_id=str(run_id),
                        parent_run_id=str(parent_run_id) if parent_run_id else None,
-                       prompt=[_jsonable(m) for m in flat])
+                       prompt=prompt, **_prompt_identity(kwargs, prompt))
         except Exception as e:
             logging.getLogger(__name__).debug("on_chat_model_start failed: %s", e)
 
     def on_llm_start(self, serialized, prompts, *, run_id=None, parent_run_id=None, **kwargs):
         try:
             self._llm_starts[str(run_id)] = time.time()
+            prompt = [_truncate(p) for p in (prompts or [])]
             self._emit("llm_call_start", run_id=str(run_id),
                        parent_run_id=str(parent_run_id) if parent_run_id else None,
-                       prompt=[_truncate(p) for p in (prompts or [])])
+                       prompt=prompt, **_prompt_identity(kwargs, prompt))
         except Exception as e:
             logging.getLogger(__name__).debug("on_llm_start failed: %s", e)
 
@@ -262,13 +313,17 @@ class AuditCallbackHandler(BaseCallbackHandler):
 
 
 @contextmanager
-def audited_run(handler: AuditCallbackHandler, user_input: str):
+def audited_run(handler: AuditCallbackHandler, user_input: str,
+                message_id: Optional[str] = None):
     """Bracket one invocation with ``invocation_start`` / ``invocation_end`` events.
 
     Emits the raw input on entry and, on exit, the accumulated token totals, wall-clock
     duration, status, and (if set via :meth:`AuditCallbackHandler.set_output`) the final output.
+
+    ``invocation_id`` is set to the caller's ``message_id`` (falling back to the handler's
+    message_id, else a fresh UUID) so a turn's start/end records share one id for joining.
     """
-    invocation_id = str(uuid.uuid4())
+    invocation_id = message_id or handler.message_id or str(uuid.uuid4())
     start = time.time()
     handler._emit("invocation_start", invocation_id=invocation_id, input=user_input)
     status = "success"

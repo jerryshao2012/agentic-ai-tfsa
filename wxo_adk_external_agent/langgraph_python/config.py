@@ -33,3 +33,13 @@ WATSONX_SPACE_ID = os.getenv('WATSONX_SPACE_ID', None)
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 TAVILY_API_KEY = os.getenv('TAVILY_API_KEY', '')
+
+# --- Synthetic data sources (S3) ---
+# When DATA_S3_BUCKET is set, profiles/limits/transactions are loaded from S3 (see
+# data_sources.py); otherwise the agent falls back to the built-in mock + local files.
+# The AgentCore execution role needs s3:GetObject on this bucket.
+DATA_S3_BUCKET = os.getenv('DATA_S3_BUCKET', '')
+PROFILE_S3_PREFIX = os.getenv('PROFILE_S3_PREFIX', 'profiles')
+TRANSACTIONS_S3_PREFIX = os.getenv('TRANSACTIONS_S3_PREFIX', 'transactions')
+LIMITS_S3_KEY = os.getenv('LIMITS_S3_KEY', 'reference/tfsa_limits.json')
+DATA_S3_REGION = os.getenv('DATA_S3_REGION', AWS_REGION)

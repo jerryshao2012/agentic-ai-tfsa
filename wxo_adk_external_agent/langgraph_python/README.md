@@ -115,7 +115,8 @@ AWS-specific files (all at the top level, beside the shared modules):
 | `tfsa_agentcore.py` | Bedrock AgentCore entrypoint (`/invocations` + `/ping` on :8080) |
 | `deploy_agentcore.py` | Deploys the agent to Bedrock AgentCore Runtime |
 | `test_agent.py` | Invokes the deployed runtime over boto3 |
-| `otel_utils.py` | Optional CloudWatch (OTEL) observability |
+| `otel_utils.py` | Optional CloudWatch (OTEL) span helpers |
+| `agent_obs.py` | Structured JSON audit logging (tool calls, LLM I/O, token usage) |
 | `requirements_agentcore.txt` | Container requirements for the runtime |
 
 ### Prerequisites
@@ -171,6 +172,61 @@ python deploy_agentcore.py --cleanup
 python test_agent.py "What is the overcontribution penalty?"
 python test_agent.py "I want to contribute \$2000" --thread t1   # multi-turn
 ```
+
+### 4. Structured audit logging (`agent_obs.py`)
+
+On top of the human-readable logs, every invocation also emits **structured, one-object-per-line
+JSON** to stdout via `agent_obs.py`. AgentCore ships these to the CloudWatch log group
+`/aws/bedrock-agentcore/runtimes/<agent_id>-DEFAULT`, from where they can be exported to S3 and
+parsed directly with `json.loads(line)` — no prefix stripping. These lines carry the full
+input/output, every tool call, every LLM prompt+completion, and token usage, so a downstream
+pipeline has complete evidence for analysis.
+
+`agent_obs.py` is an **agent-agnostic framework** (no TFSA imports); the TFSA graph is its first
+consumer. Any other LangChain/LangGraph agent can reuse it in ~3 lines:
+```python
+from agent_obs import AuditCallbackHandler, audited_run
+handler = AuditCallbackHandler(agent="my_agent", thread_id=tid, user_id=uid)
+with audited_run(handler, user_input=prompt):
+    graph_app.stream(state, config={"callbacks": [handler]})
+    handler.set_output(final_text)
+```
+
+Events emitted per invocation (each its own JSON line):
+
+| `event_type` | Key fields |
+|--------------|-----------|
+| `invocation_start` | `input` (raw user prompt) |
+| `llm_call_start` | `prompt` (full messages incl. system instructions) |
+| `llm_call_end` | `completion` (raw output), `usage` (input/output/total tokens), `duration_ms` |
+| `tool_call_start` | `tool`, `args` |
+| `tool_call` | `tool`, `result`, `status`, `duration_ms` |
+| `invocation_end` | `output`, `token_usage` (totals), `duration_ms`, `status` |
+
+Every line also includes correlation keys: `ts`, `agent`, `trace_id`/`span_id` (from the OTEL
+span), `thread_id`, `user_id`, and `run_id`/`parent_run_id` to link LLM/tool calls within a turn.
+
+> **Note:** captured **raw, with no redaction** (intended for adversarial/red-team evaluation with
+> mock profile data). Restrict access to the CloudWatch log group and the S3 export bucket
+> accordingly. Per-field size is capped via `AGENT_OBS_MAX_FIELD_CHARS` (default 200 000) to stay
+> under the 256 KB CloudWatch event limit.
+
+**Query in CloudWatch Logs Insights** (examples):
+```
+# All tool calls, newest first
+fields ts, tool, status, duration_ms, args, result
+| filter event_type = "tool_call"
+| sort ts desc
+
+# Token spend per invocation
+fields ts, user_id, token_usage.total_tokens, duration_ms
+| filter event_type = "invocation_end"
+| sort ts desc
+```
+
+**Export to S3** (for the downstream analyzer): add a CloudWatch Logs subscription filter →
+Kinesis Data Firehose → S3, or a scheduled `create-export-task` on the runtime's log group. This
+is AWS-side configuration and is not performed by `deploy_agentcore.py`.
 
 ## Deployment Instructions
 

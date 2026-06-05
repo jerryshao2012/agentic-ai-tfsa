@@ -2,6 +2,7 @@
 import logging
 import os
 import pickle
+import tempfile
 import threading
 import time
 
@@ -10,7 +11,35 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-CACHE_PATH = "cache"
+# Directory for the pickle cache files. Configurable via env so it can point at a
+# writable location in read-only / non-root container runtimes (e.g. Bedrock
+# AgentCore, where the baked-in /app/cache is root-owned and not writable).
+CACHE_PATH = os.environ.get("CACHE_PATH", "cache")
+
+
+def _resolve_writable_cache_dir() -> str:
+    """Return CACHE_PATH if writable, otherwise fall back to a temp dir.
+
+    Bedrock AgentCore runs the container as a non-root user while /app and its
+    contents are root-owned, so writing cache/<name>.pkl raises PermissionError.
+    Probing for writability (rather than just checking existence) handles the case
+    where the directory exists but is read-only.
+    """
+    candidate = CACHE_PATH
+    try:
+        os.makedirs(candidate, exist_ok=True)
+        probe = os.path.join(candidate, ".write_test")
+        with open(probe, "w") as handle:
+            handle.write("ok")
+        os.remove(probe)
+        return candidate
+    except OSError:
+        fallback = os.path.join(tempfile.gettempdir(), "tfsa_cache")
+        os.makedirs(fallback, exist_ok=True)
+        logging.warning(
+            "Cache dir %r is not writable; falling back to %r", candidate, fallback
+        )
+        return fallback
 
 thread_locks = {}
 
@@ -46,9 +75,8 @@ class Cache(object):
     def _init_cache(self, cache_name: str):
 
         self.cache_name = cache_name
-        if not os.path.exists(CACHE_PATH):
-            os.makedirs(CACHE_PATH)
-        self.cache_file_path = os.path.join(CACHE_PATH, f"{cache_name}.pkl")
+        cache_dir = _resolve_writable_cache_dir()
+        self.cache_file_path = os.path.join(cache_dir, f"{cache_name}.pkl")
         if os.path.exists(self.cache_file_path):
             with open(self.cache_file_path, 'rb') as handle:
                 self.cache_dict = pickle.load(handle)

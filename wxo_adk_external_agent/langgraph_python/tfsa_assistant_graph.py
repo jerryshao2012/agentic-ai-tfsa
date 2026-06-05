@@ -17,6 +17,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
 
 import config
+import data_sources
 from cache import Cache
 from models import ModelName, DEFAULT_MODEL
 
@@ -28,7 +29,7 @@ except ImportError:
 
 # Structured audit logging (tool calls, full LLM prompt/completion, token usage) for
 # CloudWatch -> S3. Agent-agnostic framework; this graph is its first consumer.
-from agent_obs import AuditCallbackHandler, audited_run
+from agent_obs import AuditCallbackHandler, audited_run, log_event
 
 logging.basicConfig(
     level=logging.INFO,
@@ -106,6 +107,41 @@ def initialize_llm():
 
 llm = initialize_llm()
 
+
+# Stable identifiers for each agent's system prompt, surfaced on llm_call_start events
+# (prompt_name/prompt_version/prompt_role/prompt_hash) so prompts are queryable and diffable
+# in the logs. Bump the version string whenever a prompt's text is changed.
+PROMPTS = {
+    "document_agent": ("document_policy_expert", "v2"),
+    "search_agent": ("search_synthesis", "v2"),
+    "response_agent": ("response_specialist", "v2"),
+}
+
+
+def _prompt_config(agent: str) -> dict:
+    """LangChain invoke config that tags an LLM call with its prompt identity.
+
+    Passed as ``llm.invoke(prompt, config=_prompt_config("document_agent"))``; the audit
+    callback reads run_name + metadata and records them on the llm_call_start event.
+    """
+    name, version = PROMPTS.get(agent, (agent, "v1"))
+    return {
+        "run_name": agent,
+        "metadata": {"prompt_name": name, "prompt_version": version, "prompt_role": "system"},
+    }
+
+
+def _invoke_llm(prompt: str, agent: str):
+    """Invoke the shared LLM, tagging the call with its prompt identity when supported.
+
+    Custom LLMs (e.g. the watsonx wrapper) whose .invoke() doesn't accept a config kwarg
+    fall back to a plain call so prompt tagging never breaks a provider.
+    """
+    try:
+        return llm.invoke(prompt, config=_prompt_config(agent))
+    except TypeError:
+        return llm.invoke(prompt)
+
 # Constants for TFSA limits file
 TFSA_LIMITS_FILE = "tfsa_limits.json"
 
@@ -126,17 +162,11 @@ def _load_or_update_tfsa_limits() -> dict:
         2021: 6000, 2022: 6000, 2023: 6500, 2024: 7000
     }
 
-    # Try to load from file first
-    if os.path.exists(TFSA_LIMITS_FILE):
-        try:
-            with open(TFSA_LIMITS_FILE, 'r') as f:
-                file_limits = json.load(f)
-                # Convert string keys to integers
-                limits = {int(year): limit for year, limit in file_limits.items()}
-            logging.info(f"Loaded TFSA limits from {TFSA_LIMITS_FILE}")
-        except Exception as e:
-            logging.warning(f"Failed to load TFSA limits from file: {e}")
-            limits = base_limits.copy()
+    # Load from the configured data source (S3 if DATA_S3_BUCKET is set, else the local
+    # tfsa_limits.json file). Falls back to base_limits if neither yields data.
+    limits = data_sources.load_tfsa_limits()
+    if limits:
+        logging.info("Loaded TFSA limits from data source (%d years)", len(limits))
     else:
         limits = base_limits.copy()
 
@@ -230,9 +260,9 @@ def _search_for_missing_limits(missing_years: list, current_limits: dict) -> dic
         return {}
 
 
-# Load or update TFSA limits at startup
-TFSA_LIMITS = _load_or_update_tfsa_limits()
-logging.info(f"TFSA Limits loaded: {TFSA_LIMITS}")
+# NOTE: TFSA_LIMITS is initialized further below, AFTER the search tools
+# (search_cra_tfsa_policy / search_cra_tfsa_policy_duck_duck_go) are defined, since
+# _load_or_update_tfsa_limits() may call them when current-year limits are missing.
 
 
 # ======================
@@ -306,22 +336,14 @@ class AgentState(TypedDict):
 # ======================
 @tool
 def retrieve_user_profile(user_id: str) -> dict:
-    """Retrieves user's profile from bank database"""
-    # Mock implementation - replace with actual DB call or API
-    # TODO: Add JWT validation using PyJWT for user sessions
-    # TODO: Integrate with bank's SSO system
-    return {
-        "user_id": user_id,
-        "name": "Melanie",
-        "age": 25,
-        "residency_status": "Canadian Resident",
-        "sin": "123-456-789",
-        "first_tfsa_year": 2023,
-        "past_contributions": 6500,  # 2023 limit
-        "withdrawals_last_year": 2000,
-        "current_year_contributions": 1500,
-        "checking_balance": 8500.00
-    }
+    """Retrieves user's profile from the configured data source (S3) by user_id.
+
+    Falls back to a built-in mock profile when no S3 bucket is configured or the
+    user's object is missing (see data_sources.load_user_profile).
+    """
+    # TODO: gate on an authenticated identity (the user_id is still caller-supplied);
+    #       integrate with the bank's SSO / JWT before exposing real PII.
+    return data_sources.load_user_profile(user_id)
 
 
 @tool
@@ -338,15 +360,26 @@ def search_cra_tfsa_policy(query: str) -> list:
     """Searches Canada CRA website for current TFSA policies using Tavily"""
     # pip install -U langchain-tavily
     from langchain_tavily import TavilySearch
-    tavily = TavilySearch(api_key=config.TAVILY_API_KEY, max_results=3)
+    # search_depth/include_answer/include_raw_content must be set at instantiation;
+    # langchain-tavily rejects them as per-invocation params.
+    tavily = TavilySearch(
+        api_key=config.TAVILY_API_KEY,
+        max_results=3,
+        search_depth="advanced",
+        include_answer=True,
+        include_raw_content=True,
+    )
     # Real-time policy verification using Tavily search
     results = tavily.invoke({
         "query": f"site:canada.ca TFSA {datetime.datetime.now().year} {query}",
-        "search_depth": "advanced",
-        "include_answer": True,
-        "include_raw_content": True
     })
     return results
+
+
+# Load or update TFSA limits at startup. Defined here (not near the loader) because
+# _load_or_update_tfsa_limits() depends on the search tools declared above.
+TFSA_LIMITS = _load_or_update_tfsa_limits()
+logging.info(f"TFSA Limits loaded: {TFSA_LIMITS}")
 
 
 @tool
@@ -405,64 +438,53 @@ def document_agent(state: AgentState):
         user_info = "User: General Inquiry"
 
     prompt = f"""
-    You are a TFSA policy expert. Current year: {current_year}
+    You are a TFSA (Tax-Free Savings Account) policy expert at a Canadian bank.
+    Current year: {current_year}
     {user_info}
-    User Question: {state['user_input']}
+    User question: {state['user_input']}
 
-    Known historical rules:
-    - Annual limit 2009-2012: $5000
-    - Annual limit 2013-2014: $5500
-    - Annual limit 2015: $10000
-    - Annual limit 2016-2018: $5500
-    - Annual limit 2019-2022: $6000
-    - Annual limit 2023: $6500
-    - Annual limit 2024: $7000
-    - Withdrawals re-added to room NEXT calendar year
-    - Overcontribution penalty: 1% per month
+    Known annual TFSA contribution limits (fixed historical facts, accurate through 2024):
+    - 2009-2012: $5,000
+    - 2013-2014: $5,500
+    - 2015: $10,000
+    - 2016-2018: $5,500
+    - 2019-2022: $6,000
+    - 2023: $6,500
+    - 2024: $7,000
+
+    Known rules:
+    - Unused contribution room carries forward indefinitely.
+    - Withdrawals are added back to contribution room the FOLLOWING calendar year, not the same year.
+    - Over-contribution penalty: 1% per month on the excess amount.
+    - You must be 18+ and a Canadian resident to contribute.
 
     Respond with JSON ONLY containing:
-    {{ 
-      "policy_summary": "Detailed response including all requested information",
-      "needs_current_search": true/false // Only true if question requires real-time verification
+    {{
+      "policy_summary": "Your answer to the user's question, using only the known facts above.",
+      "needs_current_search": true/false
     }}
-    
-    Special Instructions:
-    - If question asks about historical limits, provide COMPLETE list from 2009 to current year. Format response as:
-        ...
-        I believe you're asking about TFSA (Tax-Free Savings Account) contribution limits. 
-        Here are the annual TFSA contribution room limits for each year since the program began in Canada:
-        
+
+    Instructions:
+    - Answer ONLY from the known limits and rules above. Never invent a figure.
+    - Set "needs_current_search" to true whenever a correct answer needs data you do NOT have,
+      i.e. the contribution limit for {current_year} or any year after 2024, or cumulative room
+      that depends on those years. Otherwise set it to false.
+    - If the user asks only about historical limits (2009-2024), set "needs_current_search" to false
+      and list every year range with its amount. Format as:
         TFSA Annual Contribution Limits:
         [YEAR RANGE]: $AMOUNT
-        ...
-        
-        Total cumulative contribution room for someone eligible since 2009: $95,000 (as of 2025)
-    - Include total cumulative room for someone eligible since 2009 ($95,000 as of 2025)
-    - For future years such as current year, note they are projections
-    - For limit of current year, set needs_current_search=true since Known historical rules don't have current year
-    - For withdrawal/penalty questions, set needs_current_search=true
-    """
-
-    # Unified prompt for automation
-    """
-    I have a [TYPE_OF_INPUT] and I want to automate [THIS_SPECIFIC_TASK].
-    Here are the constraints:
-    - It should be efficient, scalable, and easy to reuse
-    - The output should be clean and ready for the next step in a workflow
-    - If the task includes transformation or formatting, follow industry best practices
-
-    Can you give me:
-    - A clean, modular Python script that performs this
-    - A list of libraries I need and why
-    - Suggestions for how I could improve or scale it later
+      and state that cumulative room for someone eligible since 2009 is the sum of all annual
+      limits up to and including the year in question.
+    - Do NOT state a limit for {current_year} or any year after 2024; defer those by setting
+      needs_current_search=true.
     """
 
     # Use unified LLM interface
     if hasattr(llm, 'invoke'):
-        response = llm.invoke(prompt)
+        response = _invoke_llm(prompt, "document_agent")
         response_content = response.content.strip() if hasattr(response, 'content') else response.strip()
     else:
-        response_content = llm.invoke(prompt)
+        response_content = _invoke_llm(prompt, "document_agent")
 
     data = _get_json_from_str(response_content, {
         "policy_summary": response_content,
@@ -492,42 +514,43 @@ def search_agent(state: AgentState):
         # Search results: {results}
         # Extract key information. Process results with LLM
         prompt = f"""
-        You are a helpful financial assistant at a Canadian bank.
-        Analyze these CRA TFSA policy search results for {datetime.datetime.now().year}:
+        You are a helpful TFSA specialist at a Canadian bank. The CRA search results below are
+        your source of truth for current-year data — ground every figure in them and never guess.
+        Current year: {datetime.datetime.now().year}
+
+        Search results:
         {json.dumps(results, indent=2)}
-        
+
         The user asked: "{state['user_input']}"
 
-        Extract the following in JSON format:
+        Return a JSON object with exactly these fields:
         {{
-          "answer": "user-friendly response to the query",
-          "current_limit": "current year contribution limit",
-          "penalty_info": "brief penalty summary",
-          "withdrawal_rules": "brief withdrawal rules summary"
+          "answer": "User-friendly response to the query, grounded in the search results.",
+          "current_limit": "The {datetime.datetime.now().year} annual TFSA contribution limit as a dollar amount, e.g. \\"$7,000\\". Use \\"unknown\\" if the results do not state it.",
+          "penalty_info": "One-sentence summary of over-contribution penalties.",
+          "withdrawal_rules": "One-sentence summary of withdrawal / re-contribution rules."
         }}
-        
-        Special Instructions for `answer` in JSON Response:
-        - For contribution intent queries, respond conversationally:
-            "I'd be happy to help you contribute to your TFSA! 
-            To provide the best guidance, could you tell me:
+
+        Instructions for the "answer" field:
+        - If the search results are missing or conflict on a figure, say so rather than inventing one.
+        - For contribution requests, respond conversationally and ask what you need to help:
+            "I'd be happy to help you contribute to your TFSA!
+            To give you the best guidance, could you tell me:
             * Do you already have a TFSA account?
-            * Are you looking to make a one-time or regular contributions?
+            * Are you making a one-time or recurring contribution?
             * Do you know your available contribution room?
-            
-            In the meantime, here are key things to know:
-            [Include key contribution information from search results]"
-        - For policy questions, provide clear historical limits
-        - For future years (beyond {datetime.datetime.now().year}), note:
-            "Future limits are projections and subject to inflation adjustment"
-        - Always use simple language and bullet points for readability
-        - Ask follow-up questions to get more details when needed
-        - Format professionally but conversationally
-        
-        Important: Respond with ONLY the JSON object. Do not include any additional text, 
-        explanations, or markdown formatting. The response must be a valid JSON object 
-        that can be parsed directly.
+
+            In the meantime, here are the key things to know:
+            [key contribution facts from the search results]"
+        - For policy questions, give the relevant limits and rules clearly.
+        - For future years (beyond {datetime.datetime.now().year}), note that limits are projections
+          subject to inflation adjustment.
+        - Use simple language and bullet points; be professional but conversational.
+
+        Important: Respond with ONLY the JSON object — no extra text, explanations, or markdown
+        fences. It must be valid JSON that can be parsed directly.
         """
-        response = llm.invoke(prompt)
+        response = _invoke_llm(prompt, "search_agent")
         # Access the content attribute of the response
         response_content = response.content.strip() if hasattr(response, 'content') else response.strip()
 
@@ -744,48 +767,50 @@ def response_agent(state: AgentState):
 
     # Create prompt for final response generation
     prompt = f"""
-    You are a certified TFSA specialist at a Canadian bank. Synthesize this information into a single, coherent, human-readable response:
+    You are a certified TFSA specialist at a Canadian bank. Write a single, coherent, human-readable
+    reply to the user using ONLY the information provided below. Never invent figures — if a value is
+    not present in the information below, do not state it.
+
     User question:
     {context['user_question']}
-    
-    Assistant responses:
+
+    Information gathered by the assistant:
     {context['assistant_responses']}
-    
+
     Additional context:
-    - Current Year: {current_year}
-    - Policy Information: {context['policy_information']}
-    - Available Contribution Room: {context['contribution_room']}
-    - Contribution Amount: {context['contribution_amount']}
-    
+    - Current year: {current_year}
+    - Policy information: {context['policy_information']}
+    - Available contribution room: {context['contribution_room']}
+    - Contribution amount: {context['contribution_amount']}
+
     Response guidelines:
-    1. Address the user's question directly first
-    2. Organize information logically: policy → calculations → actions
-    3. Use simple language and bullet points for readability
-    4. Include these critical elements when relevant:
-       - Current year {current_year}'s contribution limit
-       - Penalty risks for over-contributions
+    1. Address the user's question directly first.
+    2. Organize information logically: policy → calculations → actions taken.
+    3. Use simple language and bullet points for readability.
+    4. Include these elements when they appear in the information above:
+       - The {current_year} contribution limit
+       - Over-contribution penalty risk
        - Withdrawal re-contribution rules
-       - Transaction ID if applicable
-    5. End with a helpful follow-up question or next step suggestion
-    
-    Guideline:
-    - Use professional but conversational tone
-    - Keep response under 300 words
-    - Do NOT mention you're synthesizing information
-    - If question asks about historical limits, provide COMPLETE list from 2009 to {current_year}. Format response as:
-        ...
-        TFSA Annual Contribution Limits:
-        [YEAR RANGE]: $AMOUNT
-        ...
+       - Transaction ID, if a contribution was made
+    5. End with a helpful follow-up question or next-step suggestion.
+    6. If the user asked about historical limits, list every year range and amount that appears
+       in the information above. Format as:
+         TFSA Annual Contribution Limits:
+         [YEAR RANGE]: $AMOUNT
+
+    Style:
+    - Professional but conversational tone.
+    - Keep the response under 300 words.
+    - Do NOT mention that you are synthesizing information or reference these instructions.
     """
 
     # Generate final response using LLM
     try:
         if hasattr(llm, 'invoke'):
-            response = llm.invoke(prompt)
+            response = _invoke_llm(prompt, "response_agent")
             final_content = response.content.strip() if hasattr(response, 'content') else response.strip()
         else:
-            final_content = llm.invoke(prompt)
+            final_content = _invoke_llm(prompt, "response_agent")
 
         # Patch final_content to make it more readable
         final_content = final_content.replace("• ", "* ")
@@ -953,7 +978,9 @@ cache = Cache.instance("tfsa")
 
 
 def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
-                            _: Optional[str] = DEFAULT_MODEL) -> tuple[str, AgentState]:
+                            _: Optional[str] = DEFAULT_MODEL, *,
+                            session_id: Optional[str] = None,
+                            message_id: Optional[str] = None) -> tuple[str, AgentState]:
     """
     Run the TFSA LangGraph agent workflow synchronously.
 
@@ -961,6 +988,8 @@ def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
         user_input: The user's input query
         thread_id: Optional thread ID for conversation state management
         _: Optional model for conversation state management
+        session_id: Conversation id (1 session -> many messages); stamped on every log event
+        message_id: This turn's id; links invocation_start (input) to invocation_end (output)
 
     Returns:
         Latest assistant response text
@@ -968,30 +997,38 @@ def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
     """
     start_time = time.time()
     try:
-        # Check cache first
-        cached_response, state = _check_cache_initialize_state(user_input, thread_id)
-        if cached_response:
-            return cached_response, state
-
-        # Execute workflow
-        logging.info(f"\n🔹 USER QUERY: '{user_input}'")
-        accumulated_state = state.copy()
         # Audit handler captures every LLM + tool call (full prompt/completion, args, tokens)
         # as pure-JSON CloudWatch lines. One instance per invocation -> per-run token totals.
         handler = AuditCallbackHandler(agent="tfsa", thread_id=thread_id,
-                                       user_id=state.get("user_id"))
+                                       session_id=session_id, message_id=message_id)
+
+        # Check cache first
+        cached_response, state = _check_cache_initialize_state(user_input, thread_id)
+        handler.set_user(state.get("user_id"))
+        if cached_response:
+            # Still emit a start/end pair so every message has a mappable input+output.
+            with audited_run(handler, user_input=user_input, message_id=message_id):
+                handler.set_output(cached_response)
+            return cached_response, state
+
+        # Execute workflow. The user query is captured structurally by the
+        # invocation_start event emitted from audited_run() below.
+        accumulated_state = state.copy()
         assistant_response_text = "No response generated"
-        with audited_run(handler, user_input=user_input):
+        with audited_run(handler, user_input=user_input, message_id=message_id):
             try:
                 for step in graph_app.stream(state, config={"callbacks": [handler]}):
                     for node, value in step.items():
                         # Update accumulated state with node value
                         accumulated_state.update(value)
 
-                        # Print node output
+                        # Emit node output as a structured event (queryable in
+                        # CloudWatch Logs Insights by event_type / agent / node). Routed
+                        # through the handler so it inherits session_id/message_id/user_id.
                         if 'messages' in value and value['messages']:
                             msg = value["messages"][-1]
-                            logging.info(f"🔹 [{node.upper()}]: {msg['content']}")
+                            handler._emit("agent_node_output", node=node,
+                                          content=msg.get("content"))
             except Exception as e:
                 logging.error(f"Error executing workflow: {str(e)}")
                 # Return state with error message
@@ -1073,7 +1110,9 @@ async def _stream_graph_events(graph: CompiledStateGraph, state: dict, queue: as
 
 
 async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = None,
-                                    model: Optional[str] = DEFAULT_MODEL) -> AsyncGenerator[str, None]:
+                                    model: Optional[str] = DEFAULT_MODEL, *,
+                                    session_id: Optional[str] = None,
+                                    message_id: Optional[str] = None) -> AsyncGenerator[str, None]:
     """
     Streaming wrapper that yields SSE text/event-stream fragments.
     Compatible with watsonx Orchestrate external-agent streaming spec.
@@ -1083,6 +1122,8 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
         user_input: The user's input query
         thread_id: Optional thread ID for conversation state management
         model: Optional model for conversation state management
+        session_id: Conversation id (1 session -> many messages); stamped on every log event
+        message_id: This turn's id; links invocation_start (input) to invocation_end (output)
 
     Yields:
         SSE formatted streaming responses
@@ -1090,8 +1131,10 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
     start_time = time.time()
     graph_task = None
     # Audit handler captures every LLM + tool call as pure-JSON CloudWatch lines.
-    handler = AuditCallbackHandler(agent="tfsa", thread_id=thread_id)
-    audit_id = str(uuid.uuid4())
+    handler = AuditCallbackHandler(agent="tfsa", thread_id=thread_id,
+                                   session_id=session_id, message_id=message_id)
+    # invocation_id for this turn == message_id (fallback UUID) so start/end records join.
+    audit_id = message_id or str(uuid.uuid4())
     audit_started = False
     audit_status = "success"
 
@@ -1100,6 +1143,13 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
         cached_response, state = _check_cache_initialize_state(user_input, thread_id)
         handler.set_user(state.get("user_id"))
         if cached_response:
+            # Emit a start/end pair even on cache hits so every message has a mappable
+            # input+output record (the live path emits these further below).
+            handler._emit("invocation_start", invocation_id=audit_id, input=user_input)
+            handler.set_output(cached_response)
+            handler._emit("invocation_end", invocation_id=audit_id, status="success",
+                          duration_ms=round((time.time() - start_time) * 1000, 1),
+                          token_usage=handler.token_totals, output=cached_response)
             # To simulate a real stream, generate a single run ID to use for all chunks.
             run_id = f"run-{uuid.uuid4()}"
 
@@ -1153,7 +1203,7 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
             _stream_graph_events(graph_app, state, event_queue,
                                  config={"callbacks": [handler]}))
 
-        logging.info(f"\n🔹 USER QUERY: '{user_input}'")
+        # User query is captured by the invocation_start event below.
         handler._emit("invocation_start", invocation_id=audit_id, input=user_input)
         audit_started = True
 

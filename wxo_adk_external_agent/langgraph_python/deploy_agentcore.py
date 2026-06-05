@@ -96,6 +96,19 @@ def deploy():
     else:
         print("WARNING: TAVILY_API_KEY not set — search_agent will fall back to DuckDuckGo.")
 
+    # Synthetic data sources (S3). Forward if a bucket is configured; the agent reads
+    # profiles/limits/transactions from here, falling back to the built-in mock if the
+    # execution role lacks s3:GetObject (so this is safe to deploy before the IAM grant).
+    if os.getenv("DATA_S3_BUCKET"):
+        for var in ("DATA_S3_BUCKET", "PROFILE_S3_PREFIX", "TRANSACTIONS_S3_PREFIX",
+                    "LIMITS_S3_KEY", "DATA_S3_REGION"):
+            if os.getenv(var):
+                env_vars[var] = os.environ[var]
+        print(f"Data source: s3://{os.environ['DATA_S3_BUCKET']} "
+              "(falls back to mock until the execution role has s3:GetObject).")
+    else:
+        print("DATA_S3_BUCKET not set — agent will use the built-in mock profile.")
+
     # One-time observability setup so spans are actually ingested.
     enable_transaction_search(region)
 
