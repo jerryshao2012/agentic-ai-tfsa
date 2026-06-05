@@ -530,6 +530,7 @@ def search_agent(state: AgentState):
           "penalty_info": "One-sentence summary of over-contribution penalties.",
           "withdrawal_rules": "One-sentence summary of withdrawal / re-contribution rules."
         }}
+        
 
         Instructions for the "answer" field:
         - If the search results are missing or conflict on a figure, say so rather than inventing one.
