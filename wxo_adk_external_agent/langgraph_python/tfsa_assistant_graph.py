@@ -28,7 +28,7 @@ except ImportError:
 
 # Structured audit logging (tool calls, full LLM prompt/completion, token usage) for
 # CloudWatch -> S3. Agent-agnostic framework; this graph is its first consumer.
-from agent_obs import AuditCallbackHandler, audited_run
+from agent_obs import AuditCallbackHandler, audited_run, log_event
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +45,26 @@ logging.basicConfig(
 # TODO: Multi-year projection tool
 # TODO: Integrated tax impact analysis
 
+def _bedrock_runtime_client():
+    """A bedrock-runtime client with adaptive retries + timeouts.
+
+    Adaptive mode adds client-side rate limiting and more retry attempts than the default
+    "legacy" mode (4), which is the main reason ThrottlingException was surfacing as
+    "No response generated" under load.
+    """
+    import boto3
+    from botocore.config import Config
+    return boto3.client(
+        "bedrock-runtime",
+        region_name=config.AWS_REGION,
+        config=Config(
+            retries={"max_attempts": config.BEDROCK_MAX_ATTEMPTS, "mode": "adaptive"},
+            read_timeout=config.BEDROCK_READ_TIMEOUT,
+            connect_timeout=10,
+        ),
+    )
+
+
 def initialize_llm():
     """Initializes and returns the appropriate LLM based on configuration."""
     provider = config.AI_SERVICES_PROVIDER
@@ -54,23 +74,11 @@ def initialize_llm():
         # and also works for Anthropic Claude. It streams natively via astream_events.
         try:
             from langchain_aws import ChatBedrockConverse
-            import boto3
-            from botocore.config import Config
-            retry_config = Config(
-                retries={
-                    'max_attempts': 4,
-                    'mode': 'standard'
-                }
-            )
-            bedrock_client = boto3.client(
-                service_name="bedrock-runtime",
-                region_name=config.AWS_REGION,
-                config=retry_config
-            )
             return ChatBedrockConverse(
+                client=_bedrock_runtime_client(),
                 model=config.BEDROCK_MODEL_ID,
-                client=bedrock_client,
                 temperature=0,
+                max_tokens=config.BEDROCK_MAX_TOKENS,
             )
         except ImportError:
             raise ValueError(
@@ -117,7 +125,33 @@ def initialize_llm():
     return WatsonLLM()
 
 
+def initialize_thinking_llm():
+    """Optional Claude-on-Bedrock instance with native extended thinking enabled.
+
+    Returns None unless config.ENABLE_THINKING is set AND the provider is Bedrock. Extended
+    thinking requires temperature=1 and max_tokens > budget_tokens, so this is a SEPARATE
+    instance from the deterministic temperature=0 `llm` used for strict JSON parsing.
+    """
+    if not config.ENABLE_THINKING or 'bedrock' not in config.AI_SERVICES_PROVIDER:
+        return None
+    try:
+        from langchain_aws import ChatBedrockConverse
+        return ChatBedrockConverse(
+            client=_bedrock_runtime_client(),
+            model=config.BEDROCK_MODEL_ID,
+            temperature=1,  # required by Anthropic extended thinking
+            max_tokens=config.THINKING_MAX_TOKENS,
+            additional_model_request_fields={
+                "thinking": {"type": "enabled", "budget_tokens": config.THINKING_BUDGET_TOKENS}
+            },
+        )
+    except Exception as e:  # never break startup over an optional debugging feature
+        logging.warning("Thinking-enabled LLM unavailable (%s); falling back to standard llm", e)
+        return None
+
+
 llm = initialize_llm()
+thinking_llm = initialize_thinking_llm()
 
 # Stable identifiers for each agent's system prompt, surfaced on llm_call_start events
 # (prompt_name/prompt_version/prompt_role/prompt_hash) so prompts are queryable and diffable
@@ -242,16 +276,36 @@ def _build_rate_limit_fallback(user_input: str, current_year: int) -> str:
     )
 
 
-def _invoke_llm(prompt: str, agent: str):
+def _log_route(state: "AgentState", node: str, decision: str, reason: str,
+               data_selected: str, **extra) -> None:
+    """Emit a ``routing_decision`` event: which branch the graph took and why.
+
+    This is the agent's *plan* + data-source selection, otherwise invisible in the logs
+    (the route_* functions are pure branching with no output). session_id/message_id are
+    pulled from state so the event groups with the rest of the turn; trace_id/span_id are
+    auto-attached by log_event from the current OTEL span.
+    """
+    log_event("routing_decision", agent="tfsa", node=node, decision=decision,
+              reason=reason, data_selected=data_selected,
+              session_id=state.get("session_id"), message_id=state.get("message_id"),
+              user_id=state.get("user_id"), **extra)
+
+
+def _invoke_llm(prompt: str, agent: str, use_thinking: bool = False):
     """Invoke the shared LLM, tagging the call with its prompt identity when supported.
 
     Custom LLMs (e.g. the watsonx wrapper) whose .invoke() doesn't accept a config kwarg
     fall back to a plain call so prompt tagging never breaks a provider.
+
+    When ``use_thinking`` is set and a thinking-enabled instance exists (config.ENABLE_THINKING
+    on Bedrock), the call is routed through it so its reasoning blocks are captured on
+    llm_call_end; otherwise it transparently uses the standard temperature=0 ``llm``.
     """
+    active_llm = thinking_llm if (use_thinking and thinking_llm is not None) else llm
     try:
-        return llm.invoke(prompt, config=_prompt_config(agent))
+        return active_llm.invoke(prompt, config=_prompt_config(agent))
     except TypeError:
-        return llm.invoke(prompt)
+        return active_llm.invoke(prompt)
 
 
 # Constants for TFSA limits file
@@ -442,6 +496,10 @@ class AgentState(TypedDict):
     contribution_room: Optional[float]
     current_tfsa_limit: Optional[float]
     contribution_amount: Optional[float]
+    # Carried so routing_decision / node_error events emitted from inside the graph group
+    # with the turn's other events by conversation + message (trace_id joins automatically).
+    session_id: Optional[str]
+    message_id: Optional[str]
     messages: Annotated[list[dict], operator.add]
 
 
@@ -574,6 +632,7 @@ def document_agent(state: AgentState):
 
     Respond with JSON ONLY containing:
     {{
+      "reasoning": "1-2 sentences: why you chose this answer and whether you need live data. Audit-only.",
       "policy_summary": "Your answer to the user's question, using only the known facts above.",
       "needs_current_search": true/false
     }}
@@ -593,19 +652,45 @@ def document_agent(state: AgentState):
       needs_current_search=true.
     """
 
-    # Use unified LLM interface
-    if hasattr(llm, 'invoke'):
-        response = _invoke_llm(prompt, "document_agent")
-        response_content = _extract_string_content(response.content) if hasattr(response,
-                                                                                'content') else _extract_string_content(
-            response)
-    else:
-        response_content = _invoke_llm(prompt, "document_agent")
+    # Use unified LLM interface. Guard the call: a Bedrock ThrottlingException here (this is the
+    # first LLM node, hit on every policy question) would otherwise propagate to the workflow
+    # loop, leave no assistant message, and surface to the user as "No response generated".
+    try:
+        if hasattr(llm, 'invoke'):
+            response = _invoke_llm(prompt, "document_agent", use_thinking=True)
+            response_content = _extract_string_content(response.content) if hasattr(response,
+                                                                                    'content') else _extract_string_content(
+                response)
+        else:
+            response_content = _invoke_llm(prompt, "document_agent", use_thinking=True)
+    except Exception as e:
+        log_event("node_error", agent="tfsa", node="document_agent",
+                  error=str(e), error_type=type(e).__name__, stage="llm_call",
+                  session_id=state.get("session_id"), message_id=state.get("message_id"),
+                  user_id=state.get("user_id"))
+        return {"messages": [{
+            "role": "assistant",
+            "content": ("I'm experiencing high demand right now and couldn't complete that "
+                        "request. Please try again in a few moments."),
+        }]}
 
     data = _get_json_from_str(response_content, {
+        "reasoning": "",
         "policy_summary": response_content,
-        "needs_current_search": True
+        "needs_current_search": True,
+        "_parse_failed": True
     })
+    if data.pop("_parse_failed", False):
+        log_event("node_error", agent="tfsa", node="document_agent",
+                  error="LLM output was not valid JSON; used fallback", error_type="json_parse",
+                  session_id=state.get("session_id"), message_id=state.get("message_id"),
+                  user_id=state.get("user_id"))
+    # Audit-only: capture the model's rationale (kept out of the user-facing content).
+    log_event("agent_reasoning", agent="tfsa", node="document_agent",
+              reasoning=data.get("reasoning", ""),
+              needs_search=data.get("needs_current_search"),
+              session_id=state.get("session_id"), message_id=state.get("message_id"),
+              user_id=state.get("user_id"))
     return {
         "messages": [{
             "role": "document_agent",
@@ -641,6 +726,7 @@ def search_agent(state: AgentState):
 
         Return a JSON object with exactly these fields:
         {{
+          "reasoning": "1-2 sentences: how the search results ground your answer. Audit-only.",
           "answer": "User-friendly response to the query, grounded in the search results.",
           "current_limit": "The {datetime.datetime.now().year} annual TFSA contribution limit as a dollar amount, e.g. \\"$7,000\\". Use \\"unknown\\" if the results do not state it.",
           "penalty_info": "One-sentence summary of over-contribution penalties.",
@@ -667,7 +753,7 @@ def search_agent(state: AgentState):
         Important: Respond with ONLY the JSON object — no extra text, explanations, or markdown
         fences. It must be valid JSON that can be parsed directly.
         """
-        response = _invoke_llm(prompt, "search_agent")
+        response = _invoke_llm(prompt, "search_agent", use_thinking=True)
         # Access the content attribute of the response
         response_content = _extract_string_content(response.content) if hasattr(response,
                                                                                 'content') else _extract_string_content(
@@ -675,7 +761,18 @@ def search_agent(state: AgentState):
 
         # Try to parse the JSON response
         policy_data = _get_json_from_str(response_content,
-                                         {"answer": response_content, "error": "Could not parse policy data"})
+                                         {"reasoning": "", "answer": response_content,
+                                          "error": "Could not parse policy data"})
+        if policy_data.get("error") == "Could not parse policy data":
+            log_event("node_error", agent="tfsa", node="search_agent",
+                      error="LLM output was not valid JSON; used fallback", error_type="json_parse",
+                      session_id=state.get("session_id"), message_id=state.get("message_id"),
+                      user_id=state.get("user_id"))
+        # Audit-only: capture the model's rationale (kept out of the user-facing content).
+        log_event("agent_reasoning", agent="tfsa", node="search_agent",
+                  reasoning=policy_data.get("reasoning", ""),
+                  session_id=state.get("session_id"), message_id=state.get("message_id"),
+                  user_id=state.get("user_id"))
 
         # Extract and store the current year's limit directly in the state
         current_limit = None
@@ -697,6 +794,10 @@ def search_agent(state: AgentState):
             }]
         }
     except Exception as e:
+        log_event("node_error", agent="tfsa", node="search_agent",
+                  error=str(e), error_type=type(e).__name__, stage="search",
+                  session_id=state.get("session_id"), message_id=state.get("message_id"),
+                  user_id=state.get("user_id"))
         return {
             "messages": [{
                 "role": "search_agent",
@@ -913,6 +1014,13 @@ def response_agent(state: AgentState):
     - Professional but conversational tone.
     - Keep the response under 300 words.
     - Do NOT mention that you are synthesizing information or reference these instructions.
+
+    Output format (follow exactly):
+    - First, one line of audit-only reasoning starting with "REASONING:" (1-2 sentences on how
+      you synthesized the reply from the information above).
+    - Then a line containing exactly: ###ANSWER###
+    - Then the user-facing reply. Never repeat the word REASONING or the ###ANSWER### separator
+      inside the reply itself.
     """
 
     # Check if we can bypass the LLM call when we already have a complete answer from document_agent
@@ -939,12 +1047,24 @@ def response_agent(state: AgentState):
         # Generate final response using LLM
         try:
             if hasattr(llm, 'invoke'):
-                response = _invoke_llm(prompt, "response_agent")
+                response = _invoke_llm(prompt, "response_agent", use_thinking=True)
                 final_content = _extract_string_content(response.content) if hasattr(response,
                                                                                      'content') else _extract_string_content(
                     response)
             else:
-                final_content = _invoke_llm(prompt, "response_agent")
+                final_content = _invoke_llm(prompt, "response_agent", use_thinking=True)
+
+            # Split off the audit-only reasoning prefix so it never reaches the user. If the model
+            # omitted the separator we treat the whole output as the reply (reasoning stays empty).
+            reasoning_text = ""
+            if "###ANSWER###" in final_content:
+                reasoning_part, final_content = final_content.split("###ANSWER###", 1)
+                reasoning_text = re.sub(r'^\s*REASONING:\s*', '', reasoning_part.strip()).strip()
+                final_content = final_content.strip()
+            log_event("agent_reasoning", agent="tfsa", node="response_agent",
+                      reasoning=reasoning_text,
+                      session_id=state.get("session_id"), message_id=state.get("message_id"),
+                      user_id=state.get("user_id"))
 
             # Patch final_content to make it more readable
             final_content = final_content.replace("• ", "* ")
@@ -972,6 +1092,10 @@ def response_agent(state: AgentState):
                 cache.cache(cache_hash, final_content, metadata={"user_input": user_input})
         except Exception as e:
             logging.error(f"Response generation failed: {str(e)}")
+            log_event("node_error", agent="tfsa", node="response_agent",
+                      error=str(e), error_type=type(e).__name__, stage="response_synthesis",
+                      session_id=state.get("session_id"), message_id=state.get("message_id"),
+                      user_id=state.get("user_id"))
             # Fallback to intermediate messages if the final LLM call failed (e.g. throttled)
             fallback_parts = []
             if document_response and document_response != "N/A":
@@ -1018,12 +1142,18 @@ def create_workflow() -> CompiledStateGraph:
         # Handle calculation requests (contribution room)
         if (re.search(r"contribution room|how much can i contribute|room available|limit available", user_input) or
                 "how much" in user_input and ("contribute" in user_input or "room" in user_input)):
+            _log_route(state, "profile_agent", "calculation_agent",
+                       "matched contribution-room intent", "user_profile+room_calc")
             return "calculation_agent"
 
         # Handle transaction requests
         if _is_transaction_request(user_input):
+            _log_route(state, "profile_agent", "calculation_agent",
+                       "matched transaction intent", "user_profile+room_calc")
             return "calculation_agent"  # Need room calculation first
 
+        _log_route(state, "profile_agent", "document_agent",
+                   "no calc/txn keyword — policy question", "static_policy_kb")
         return "document_agent"
 
     workflow.add_conditional_edges(
@@ -1042,8 +1172,12 @@ def create_workflow() -> CompiledStateGraph:
 
         # Handle transaction requests
         if _is_transaction_request(user_input):
+            _log_route(state, "calculation_agent", "transaction_agent",
+                       "matched execute-transaction intent", "user_profile+room_calc")
             return "transaction_agent"
         # For simple queries like "what is my room?", end after calculation.
+        _log_route(state, "calculation_agent", "END",
+                   "informational room query — no transaction", "user_profile+room_calc")
         return END
 
     workflow.add_conditional_edges(
@@ -1060,8 +1194,12 @@ def create_workflow() -> CompiledStateGraph:
         """Decide next step after document_agent"""
         # Always search if needed
         if any(msg.get("needs_search", False) for msg in state["messages"]):
+            _log_route(state, "document_agent", "search_agent",
+                       "needs_current_search=true (post-2024 data not in KB)", "live_cra_search")
             return "search_agent"
 
+        _log_route(state, "document_agent", "response_agent",
+                   "answerable from static KB", "static_policy_kb")
         return "response_agent"
 
     workflow.add_conditional_edges(
@@ -1147,6 +1285,10 @@ def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
 
         # Check cache first
         cached_response, state = _check_cache_initialize_state(user_input, thread_id)
+        # Carry the conversation/turn ids into state so in-graph events (routing_decision,
+        # node_error) can stamp them like the callback-emitted events do.
+        state["session_id"] = session_id
+        state["message_id"] = message_id
         handler.set_user(state.get("user_id"))
         if cached_response:
             # Still emit a start/end pair so every message has a mappable input+output.
@@ -1174,6 +1316,8 @@ def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
                                           content=msg.get("content"))
             except Exception as e:
                 logging.error(f"Error executing workflow: {str(e)}")
+                handler._emit("node_error", node="workflow", error=str(e),
+                              error_type=type(e).__name__, stage="workflow")
                 # Return state with error message
                 state["messages"].append({
                     "role": "system",
@@ -1316,6 +1460,10 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
     try:
         # Check cache first, which also initializes the state dictionary
         cached_response, state = _check_cache_initialize_state(user_input, thread_id)
+        # Carry the conversation/turn ids into state so in-graph events (routing_decision,
+        # node_error) can stamp them like the callback-emitted events do.
+        state["session_id"] = session_id
+        state["message_id"] = message_id
         handler.set_user(state.get("user_id"))
         if cached_response:
             # Emit a start/end pair even on cache hits so every message has a mappable

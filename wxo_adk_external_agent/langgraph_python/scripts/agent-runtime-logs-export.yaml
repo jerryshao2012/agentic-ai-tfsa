@@ -1,0 +1,315 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Ship AgentCore runtime structured logs (JSON events) from a specific
+  agent's log group to S3 in near real-time. Targets the per-agent log group
+  at /aws/bedrock-agentcore/runtimes/<agent>, excludes the "otel-rt-logs"
+  stream, and only keeps log events that are valid JSON — dropping plain-text
+  lines like WARNING/INFO messages. Writes newline-delimited JSON to S3,
+  partitioned by date.
+
+Parameters:
+  AgentLogGroupName:
+    Type: String
+    Default: /aws/bedrock-agentcore/runtimes/SimpleAgent_SimpleAgent-o4j02wAlm9-DEFAULT
+    Description: >
+      The per-agent runtime log group. AgentCore creates one log group per
+      deployed agent runtime at /aws/bedrock-agentcore/runtimes/<AgentName>.
+  ExcludeLogStream:
+    Type: String
+    Default: otel-rt-logs
+    Description: >
+      The log stream to EXCLUDE. Events from this stream are dropped by the
+      processor Lambda. All other streams are kept (JSON events only).
+  S3Prefix:
+    Type: String
+    Default: agent-otel-logs/
+    Description: Top-level S3 prefix for written objects (trailing slash is kept)
+  BufferIntervalSeconds:
+    Type: Number
+    Default: 60
+    MinValue: 60
+    MaxValue: 900
+    Description: How long Firehose batches records before writing to S3 (60-900s)
+  BufferSizeMb:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 128
+    Description: How large a Firehose batch grows before being flushed (1-128 MB)
+
+Resources:
+
+  # =========================================================================
+  # S3 destination
+  # =========================================================================
+
+  LogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'agent-otel-logs-${AWS::AccountId}-${AWS::Region}-${AWS::StackName}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+          - Id: AbortIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+
+  # =========================================================================
+  # Lambda processor — decompresses CloudWatch Logs gzipped payload, drops
+  # events from the excluded stream (otel-rt-logs), and only keeps log
+  # events whose message is valid JSON (discarding text WARNING/INFO lines).
+  # =========================================================================
+
+  ProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  ProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ProcessorRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          EXCLUDE_LOG_STREAM: !Ref ExcludeLogStream
+      Code:
+        ZipFile: |
+          import base64
+          import gzip
+          import io
+          import json
+          import os
+
+          EXCLUDE_STREAM = os.environ["EXCLUDE_LOG_STREAM"]
+
+          def handler(event, context):
+              output = []
+              for record in event["records"]:
+                  try:
+                      compressed = base64.b64decode(record["data"])
+                      raw = gzip.GzipFile(fileobj=io.BytesIO(compressed)).read()
+                      payload = json.loads(raw)
+
+                      if payload.get("messageType") == "CONTROL_MESSAGE":
+                          output.append({"recordId": record["recordId"], "result": "Dropped"})
+                          continue
+
+                      # Drop the excluded stream entirely
+                      if payload.get("logStream") == EXCLUDE_STREAM:
+                          output.append({"recordId": record["recordId"], "result": "Dropped"})
+                          continue
+
+                      # Keep only events whose message is valid JSON
+                      lines = []
+                      for ev in payload.get("logEvents", []):
+                          msg = ev.get("message", "").rstrip()
+                          if not msg:
+                              continue
+                          try:
+                              json.loads(msg)
+                              lines.append(msg)
+                          except (json.JSONDecodeError, ValueError):
+                              pass
+
+                      data = ("\n".join(lines) + "\n").encode("utf-8") if lines else b""
+
+                      output.append({
+                          "recordId": record["recordId"],
+                          "result": "Ok" if data else "Dropped",
+                          "data": base64.b64encode(data).decode("utf-8"),
+                      })
+                  except Exception as e:
+                      print(f"record {record.get('recordId')} failed: {e}")
+                      output.append({
+                          "recordId": record["recordId"],
+                          "result": "ProcessingFailed",
+                          "data": record.get("data", ""),
+                      })
+              return {"records": output}
+
+  # =========================================================================
+  # Firehose IAM role
+  # =========================================================================
+
+  FirehoseLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/kinesisfirehose/${AWS::StackName}'
+      RetentionInDays: 14
+
+  FirehoseLogStream:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref FirehoseLogGroup
+      LogStreamName: S3Delivery
+
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: WriteToS3
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource:
+                  - !GetAtt LogsBucket.Arn
+                  - !Sub '${LogsBucket.Arn}/*'
+        - PolicyName: InvokeProcessor
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                  - lambda:GetFunctionConfiguration
+                Resource: !GetAtt ProcessorFunction.Arn
+        - PolicyName: WriteOwnLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/${AWS::StackName}:log-stream:*'
+
+  # =========================================================================
+  # Firehose delivery stream
+  # =========================================================================
+
+  DeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    DependsOn:
+      - FirehoseLogStream
+    Properties:
+      DeliveryStreamName: !Sub '${AWS::StackName}-otel-logs'
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !GetAtt LogsBucket.Arn
+        RoleARN: !GetAtt FirehoseRole.Arn
+        Prefix: !Sub '${S3Prefix}year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/'
+        ErrorOutputPrefix: !Sub '${S3Prefix}errors/!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/'
+        BufferingHints:
+          IntervalInSeconds: !Ref BufferIntervalSeconds
+          SizeInMBs: !Ref BufferSizeMb
+        CompressionFormat: UNCOMPRESSED
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref FirehoseLogGroup
+          LogStreamName: S3Delivery
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+            - Type: Lambda
+              Parameters:
+                - ParameterName: LambdaArn
+                  ParameterValue: !GetAtt ProcessorFunction.Arn
+                - ParameterName: BufferIntervalInSeconds
+                  ParameterValue: '60'
+                - ParameterName: BufferSizeInMBs
+                  ParameterValue: '3'
+
+  # =========================================================================
+  # CloudWatch Logs → Firehose subscription
+  # No FilterPattern — we subscribe to the entire log group and let the
+  # Lambda processor exclude the otel-rt-logs stream and non-JSON events.
+  # CW Logs subscription filters don't support stream-level filtering.
+  # =========================================================================
+
+  CwLogsToFirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PutToFirehose
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecord
+                  - firehose:PutRecordBatch
+                Resource: !GetAtt DeliveryStream.Arn
+
+  LogSubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    DependsOn:
+      - DeliveryStream
+      - CwLogsToFirehoseRole
+    Properties:
+      LogGroupName: !Ref AgentLogGroupName
+      FilterPattern: ''
+      DestinationArn: !GetAtt DeliveryStream.Arn
+      RoleArn: !GetAtt CwLogsToFirehoseRole.Arn
+
+Outputs:
+  BucketName:
+    Description: S3 bucket where agent OTel logs land
+    Value: !Ref LogsBucket
+  BucketArn:
+    Description: S3 bucket ARN
+    Value: !GetAtt LogsBucket.Arn
+  DeliveryStreamName:
+    Description: Firehose delivery stream
+    Value: !Ref DeliveryStream
+  TargetLogGroup:
+    Description: Source log group being subscribed
+    Value: !Ref AgentLogGroupName
+  ExcludedLogStream:
+    Description: Log stream being excluded
+    Value: !Ref ExcludeLogStream
+  S3PathRoot:
+    Description: Sample S3 URI for browsing
+    Value: !Sub 's3://${LogsBucket}/${S3Prefix}'
+  ExampleQuery:
+    Description: List recent objects in S3
+    Value: !Sub |
+      aws s3 ls s3://${LogsBucket}/${S3Prefix} --recursive | tail -20
