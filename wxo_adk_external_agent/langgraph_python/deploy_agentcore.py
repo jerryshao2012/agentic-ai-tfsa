@@ -33,7 +33,7 @@ from bedrock_agentcore_starter_toolkit import Runtime
 AGENT_NAME = "tfsa_langgraph_agentcore"
 # Claude Sonnet 4.6 via cross-region inference profile (the "us." or "global." prefix is required
 # for on-demand use).
-DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
+DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 END_STATUSES = {"READY", "CREATE_FAILED", "DELETE_FAILED", "UPDATE_FAILED"}
 
 
