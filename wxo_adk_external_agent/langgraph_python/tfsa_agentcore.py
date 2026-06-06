@@ -72,7 +72,7 @@ async def invoke(payload, context=None):
 
             # Prevent empty streamed responses reaching the caller.
             if not emitted:
-                yield "I apologize, but I couldn't answer your question this time. Please try again."
+                yield "No response was generated for this request. Please retry."
 
         return gen()
 
@@ -83,7 +83,7 @@ async def invoke(payload, context=None):
     )
     text = text if isinstance(text, str) else str(text or "")
     if not text.strip():
-        text = "I apologize, but I couldn't answer your question this time. Please try again."
+        text = "No response was generated for this request. Please retry."
     return text
 
 

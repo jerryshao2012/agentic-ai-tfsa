@@ -1141,11 +1141,11 @@ def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
                 })
 
                 # Check for throttling or connection issues
-                error_msg = f"I apologize, but I encountered an error while processing your request: {str(e)}"
+                error_msg = f"Request could not be completed due to a system error: {str(e)}"
                 if "ThrottlingException" in str(e):
-                    error_msg = "I apologize, but the AI service is currently experiencing high demand and rate limits. Please try again in a few moments."
+                    error_msg = "Service is temporarily busy due to rate limits. Please retry shortly."
                 elif "ValidationException" in str(e):
-                    error_msg = f"I apologize, but a validation error occurred: {str(e)}"
+                    error_msg = f"Request validation failed: {str(e)}"
 
                 # Ensure accumulated_state has the error message as an assistant response
                 if "messages" not in accumulated_state or not isinstance(accumulated_state["messages"], list):
