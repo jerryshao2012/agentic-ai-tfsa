@@ -23,12 +23,25 @@ AgentCore runtime session id, then a generated UUID, so logs always carry both.
 """
 import asyncio
 import json
+import os
 import uuid
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from tfsa_assistant_graph import run_tfsa_assistant_sync, run_tfsa_assistant_stream
 
 app = BedrockAgentCoreApp()
+
+_THROTTLE_RETRIES = int(os.getenv("AGENTCORE_THROTTLE_RETRIES", "1"))
+_THROTTLE_BACKOFF_SECONDS = float(os.getenv("AGENTCORE_THROTTLE_BACKOFF_SECONDS", "0.8"))
+
+
+def _looks_like_throttled_response(text: str) -> bool:
+    value = (text or "").lower()
+    return (
+            "temporarily busy" in value
+            or "rate limit" in value
+            or "throttlingexception" in value
+    )
 
 
 def _resolve_ids(payload, context):
@@ -76,12 +89,19 @@ async def invoke(payload, context=None):
 
         return gen()
 
-    # Sync path
-    text, _state = await asyncio.to_thread(
-        run_tfsa_assistant_sync, prompt, thread_id, model,
-        session_id=session_id, message_id=message_id
-    )
-    text = text if isinstance(text, str) else str(text or "")
+    # Sync path: retry a throttled response once (or per env setting) with short backoff.
+    text = ""
+    for attempt in range(_THROTTLE_RETRIES + 1):
+        text, _state = await asyncio.to_thread(
+            run_tfsa_assistant_sync, prompt, thread_id, model,
+            session_id=session_id, message_id=message_id
+        )
+        text = text if isinstance(text, str) else str(text or "")
+        if not _looks_like_throttled_response(text):
+            break
+        if attempt < _THROTTLE_RETRIES:
+            await asyncio.sleep(_THROTTLE_BACKOFF_SECONDS * (2 ** attempt))
+
     if not text.strip():
         text = "No response was generated for this request. Please retry."
     return text

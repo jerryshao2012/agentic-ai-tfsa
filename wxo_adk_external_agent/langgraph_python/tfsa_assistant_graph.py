@@ -202,6 +202,46 @@ def _is_transaction_request(user_input: str) -> bool:
     return has_execute_phrase or has_amount
 
 
+def _build_rate_limit_fallback(user_input: str, current_year: int) -> str:
+    """Return a useful deterministic response when provider throttling occurs."""
+    text = (user_input or "").lower()
+
+    if re.search(r"eligib|age|resident|sin", text):
+        body = (
+            "Quick TFSA eligibility guide:\n"
+            "* You must be 18+ and a Canadian resident to contribute.\n"
+            "* A valid SIN is required.\n"
+            "* Unused room carries forward; non-resident contribution years can trigger penalties."
+        )
+    elif re.search(r"deadline|timing|when", text):
+        body = (
+            "Quick TFSA timing guide:\n"
+            "* Contributions can be made any time in the calendar year.\n"
+            "* Withdrawals are added back on Jan 1 of the following year.\n"
+            "* Over-contributions are penalized at 1% per month on the excess."
+        )
+    elif re.search(r"contribution room|how much|available room|limit available", text):
+        body = (
+            f"To calculate your {current_year} available TFSA room, I need your prior contributions, "
+            "withdrawals, and residency timeline. CRA My Account is the authoritative source for your exact room."
+        )
+    elif re.search(r"contribute|deposit|transfer|add|invest", text):
+        body = (
+            "I can help prepare a contribution safely. Please provide the amount and confirm your available room first "
+            "to avoid over-contribution penalties."
+        )
+    else:
+        body = (
+            "I can still help with TFSA policy basics while live services recover. "
+            "Share whether you need eligibility, contribution room, timing rules, or contribution steps."
+        )
+
+    return (
+        f"{body}\n\n"
+        "Note: live model capacity is temporarily busy right now; please retry shortly for full dynamic lookup."
+    )
+
+
 def _invoke_llm(prompt: str, agent: str):
     """Invoke the shared LLM, tagging the call with its prompt identity when supported.
 
@@ -1143,7 +1183,7 @@ def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
                 # Check for throttling or connection issues
                 error_msg = f"Request could not be completed due to a system error: {str(e)}"
                 if "ThrottlingException" in str(e):
-                    error_msg = "Service is temporarily busy due to rate limits. Please retry shortly."
+                    error_msg = _build_rate_limit_fallback(user_input, datetime.datetime.now().year)
                 elif "ValidationException" in str(e):
                     error_msg = f"Request validation failed: {str(e)}"
 
