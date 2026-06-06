@@ -31,9 +31,9 @@ from boto3.session import Session
 from bedrock_agentcore_starter_toolkit import Runtime
 
 AGENT_NAME = "tfsa_langgraph_agentcore"
-# Claude Sonnet 4.6 via cross-region inference profile (the "us." prefix is required
+# Claude Sonnet 4.6 via cross-region inference profile (the "us." or "global." prefix is required
 # for on-demand use).
-DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+DEFAULT_MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 END_STATUSES = {"READY", "CREATE_FAILED", "DELETE_FAILED", "UPDATE_FAILED"}
 
 

@@ -27,7 +27,7 @@ def _create_model_instance(model: str, parm_overrides=None):
         parm_overrides = {}
     defaults = {
         'temperature': 0,
-        'streaming': False
+        'streaming': True
     }
     defaults.update(parm_overrides)
 

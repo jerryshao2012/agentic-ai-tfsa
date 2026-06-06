@@ -132,7 +132,7 @@ AWS-specific files (all at the top level, beside the shared modules):
 Add the AWS variables to your `.env` (loaded automatically by `config.py`):
 ```shell
 AI_SERVICES_PROVIDER=bedrock
-BEDROCK_MODEL_ID=us.anthropic.claude-haiku-4-5-20251001-v1:0   # cross-region inference profile
+BEDROCK_MODEL_ID=global.anthropic.claude-haiku-4-5-20251001-v1:0   # cross-region inference profile
 AWS_REGION=us-east-1
 ROUTER_MODE=supervisor                                         # supervisor (LLM routing) or rules
 TAVILY_API_KEY=<tavily_api_key>                                # optional; falls back to DuckDuckGo
