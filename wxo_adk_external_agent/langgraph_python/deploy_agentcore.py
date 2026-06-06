@@ -19,8 +19,8 @@ Observability (CloudWatch GenAI Observability):
 Usage:
   export TAVILY_API_KEY=...                 # used by search_agent / TFSA limit lookups
   export BEDROCK_MODEL_ID=amazon.nova-lite-v1:0   # optional override
-  python deploy_agentcore.py                # configure + launch + wait + smoke-test
-  python deploy_agentcore.py --cleanup      # delete the runtime and its ECR repo
+  python deploy_agentcore.py --auto-update-on-conflict  # configure + launch + wait + smoke-test (updates existing agent if it exists)
+  python deploy_agentcore.py --cleanup                  # delete the runtime and its ECR repo
 """
 import argparse
 import os
@@ -65,7 +65,7 @@ def enable_transaction_search(region):
         print("  or `aws xray update-trace-segment-destination --destination CloudWatchLogs`.")
 
 
-def deploy():
+def deploy(auto_update_on_conflict: bool = False):
     region = Session().region_name or os.getenv("AWS_REGION", "us-east-1")
     print(f"Deploying '{AGENT_NAME}' to region {region}")
 
@@ -112,7 +112,7 @@ def deploy():
     # One-time observability setup so spans are actually ingested.
     enable_transaction_search(region)
 
-    launch_result = runtime.launch(env_vars=env_vars)
+    launch_result = runtime.launch(env_vars=env_vars, auto_update_on_conflict=auto_update_on_conflict)
     print(f"Launched. agent_id={launch_result.agent_id} arn={launch_result.agent_arn}")
 
     # Wait until the endpoint is READY
@@ -180,8 +180,13 @@ def cleanup():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--cleanup", action="store_true", help="Delete the deployed runtime")
+    parser.add_argument(
+        "--auto-update-on-conflict",
+        action="store_true",
+        help="Update the existing agent if it already exists",
+    )
     args = parser.parse_args()
     if args.cleanup:
         cleanup()
     else:
-        deploy()
+        deploy(auto_update_on_conflict=args.auto_update_on_conflict)

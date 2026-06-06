@@ -156,11 +156,11 @@ Optional payload fields: `"thread_id"` (multi-turn memory) and `"stream": true` 
 
 ### 2. Deploy to Bedrock AgentCore Runtime
 `deploy_agentcore.py` does not auto-load `.env`, so export it first. The script builds the
-image, pushes to ECR, creates/updates the runtime, enables CloudWatch observability, waits
+image, pushes to ECR, creates/updates the runtime (using `--auto-update-on-conflict` to update the existing agent if it already exists), enables CloudWatch observability, waits
 for `READY`, and runs smoke tests:
 ```bash
 set -a; source .env; set +a
-python deploy_agentcore.py
+python deploy_agentcore.py --auto-update-on-conflict
 ```
 Tear down the runtime and its ECR repo when finished:
 ```bash
