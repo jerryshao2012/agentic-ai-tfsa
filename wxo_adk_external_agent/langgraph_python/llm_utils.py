@@ -37,8 +37,21 @@ def _create_model_instance(model: str, parm_overrides=None):
         # Converse API client — required for Amazon Nova, compatible with Claude too.
         try:
             from langchain_aws import ChatBedrockConverse
+            import boto3
+            from botocore.config import Config
+            retry_config = Config(
+                retries={
+                    'max_attempts': 10,
+                    'mode': 'standard'
+                }
+            )
+            bedrock_client = boto3.client(
+                service_name="bedrock-runtime",
+                region_name=config.AWS_REGION,
+                config=retry_config
+            )
             return ChatBedrockConverse(model=model if model else config.BEDROCK_MODEL_ID,
-                                       region_name=config.AWS_REGION,
+                                       client=bedrock_client,
                                        temperature=defaults.get('temperature', 0))
         except ImportError:
             raise ValueError(

@@ -51,11 +51,13 @@ api_app.include_router(log_router)
 api_app.include_router(cache_router)
 
 # Enabling tracing for LangGraph (LangChain)
-mlflow.langchain.autolog()
-
-# Optional: Set a tracking URI and an experiment
-mlflow.set_tracking_uri("http://localhost:5000")
-mlflow.set_experiment("TFSA LangGraph")
+try:
+    mlflow.langchain.autolog()
+    # Optional: Set a tracking URI and an experiment
+    mlflow.set_tracking_uri("http://localhost:5000")
+    mlflow.set_experiment("TFSA LangGraph")
+except Exception as e:
+    logger.warning(f"Failed to initialize MLflow: {e}")
 
 
 @api_app.post("/chat/completions")

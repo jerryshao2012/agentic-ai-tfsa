@@ -337,7 +337,7 @@ def search_agent(state: AgentState):
         try:
             results = search_cra_tfsa_policy.invoke(query)
         except:
-            results = search_cra_tfsa_policy_duck_duck_go.invoke(query)
+            results = search_cra_tfsa_policy_duck_duck_go(query)
 
         # Search results: {results}
         # Extract key information. Process results with LLM

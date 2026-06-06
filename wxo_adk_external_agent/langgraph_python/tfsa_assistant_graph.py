@@ -54,9 +54,22 @@ def initialize_llm():
         # and also works for Anthropic Claude. It streams natively via astream_events.
         try:
             from langchain_aws import ChatBedrockConverse
+            import boto3
+            from botocore.config import Config
+            retry_config = Config(
+                retries={
+                    'max_attempts': 10,
+                    'mode': 'standard'
+                }
+            )
+            bedrock_client = boto3.client(
+                service_name="bedrock-runtime",
+                region_name=config.AWS_REGION,
+                config=retry_config
+            )
             return ChatBedrockConverse(
                 model=config.BEDROCK_MODEL_ID,
-                region_name=config.AWS_REGION,
+                client=bedrock_client,
                 temperature=0,
             )
         except ImportError:
@@ -127,6 +140,21 @@ def _prompt_config(agent: str) -> dict:
         "run_name": agent,
         "metadata": {"prompt_name": name, "prompt_version": version, "prompt_role": "system"},
     }
+
+
+def _extract_string_content(content) -> str:
+    """Safely extracts string content from message content, which can be a string or a list."""
+    if not content:
+        return ""
+    if isinstance(content, list):
+        text_chunks = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text_chunks.append(block.get("text", ""))
+            elif isinstance(block, str):
+                text_chunks.append(block)
+        return "".join(text_chunks).strip()
+    return str(content).strip()
 
 
 def _invoke_llm(prompt: str, agent: str):
@@ -208,7 +236,7 @@ def _search_for_missing_limits(missing_years: list, current_limits: dict) -> dic
             search_results = search_cra_tfsa_policy.invoke(search_query)
         except Exception as e:
             logging.warning(f"Tavily search failed: {e}. Falling back to DuckDuckGo.")
-            search_results = search_cra_tfsa_policy_duck_duck_go.invoke(search_query)
+            search_results = search_cra_tfsa_policy_duck_duck_go(search_query)
 
         # Use LLM to extract the TFSA limits from search results
         prompt = f"""
@@ -234,7 +262,9 @@ def _search_for_missing_limits(missing_years: list, current_limits: dict) -> dic
 
         # Use the already initialized LLM
         response = llm.invoke(prompt)
-        response_content = response.content.strip() if hasattr(response, 'content') else response.strip()
+        response_content = _extract_string_content(response.content) if hasattr(response,
+                                                                                'content') else _extract_string_content(
+            response)
 
         # Parse the JSON response
         result = _get_json_from_str(response_content, {})
@@ -481,7 +511,9 @@ def document_agent(state: AgentState):
     # Use unified LLM interface
     if hasattr(llm, 'invoke'):
         response = _invoke_llm(prompt, "document_agent")
-        response_content = response.content.strip() if hasattr(response, 'content') else response.strip()
+        response_content = _extract_string_content(response.content) if hasattr(response,
+                                                                                'content') else _extract_string_content(
+            response)
     else:
         response_content = _invoke_llm(prompt, "document_agent")
 
@@ -508,7 +540,7 @@ def search_agent(state: AgentState):
         try:
             results = search_cra_tfsa_policy.invoke(query)
         except:
-            results = search_cra_tfsa_policy_duck_duck_go.invoke(query)
+            results = search_cra_tfsa_policy_duck_duck_go(query)
 
         # Search results: {results}
         # Extract key information. Process results with LLM
@@ -552,7 +584,9 @@ def search_agent(state: AgentState):
         """
         response = _invoke_llm(prompt, "search_agent")
         # Access the content attribute of the response
-        response_content = response.content.strip() if hasattr(response, 'content') else response.strip()
+        response_content = _extract_string_content(response.content) if hasattr(response,
+                                                                                'content') else _extract_string_content(
+            response)
 
         # Try to parse the JSON response
         policy_data = _get_json_from_str(response_content,
@@ -804,41 +838,75 @@ def response_agent(state: AgentState):
     - Do NOT mention that you are synthesizing information or reference these instructions.
     """
 
-    # Generate final response using LLM
-    try:
-        if hasattr(llm, 'invoke'):
-            response = _invoke_llm(prompt, "response_agent")
-            final_content = response.content.strip() if hasattr(response, 'content') else response.strip()
-        else:
-            final_content = _invoke_llm(prompt, "response_agent")
+    # Check if we can bypass the LLM call when we already have a complete answer from document_agent
+    # and no search/calculation/transaction was performed.
+    document_needs_search = False
+    for msg in state["messages"]:
+        if msg.get("role") == "document_agent":
+            document_needs_search = msg.get("needs_search", False)
+            break
 
-        # Patch final_content to make it more readable
-        final_content = final_content.replace("• ", "* ")
-        final_content = final_content.replace("    ", "")
-        # Convert to lowercase for case-insensitive search
-        targets = ["response:", "answer:"]
+    has_calculation = "contribution_room" in state and state["contribution_room"] is not None
+    contribution_amount = state.get("contribution_amount")
+    has_transaction = "transaction_id" in state or (
+                isinstance(contribution_amount, (int, float)) and contribution_amount > 0)
 
-        for target in targets:
-            lower_content = final_content.lower()
-            # Find the first occurrence index
-            index = lower_content.find(target)
-
-            if index != -1:
-                # Extract content after "response:" including its original case
-                result = final_content[index + len(target):]
-                # Trim leading/trailing whitespace
-                final_content = result.strip()
+    if document_response != "N/A" and not document_needs_search and not has_calculation and not has_transaction:
+        logging.info(
+            "Bypassing response_agent LLM call: document_agent provided complete answer without search/calculations.")
+        final_content = document_response
+        # Cache the result
+        cache_hash = hashlib.sha256(f"{user_input}".encode('UTF-8')).hexdigest()
+        cache.cache(cache_hash, final_content, metadata={"user_input": user_input})
+    else:
+        # Generate final response using LLM
+        try:
+            if hasattr(llm, 'invoke'):
+                response = _invoke_llm(prompt, "response_agent")
+                final_content = _extract_string_content(response.content) if hasattr(response,
+                                                                                     'content') else _extract_string_content(
+                    response)
             else:
-                final_content = final_content.strip()
+                final_content = _invoke_llm(prompt, "response_agent")
 
-        if len(final_content) > 0:
-            # Create unique cache id to avoid duplicate requests
-            cache_hash = hashlib.sha256(f"{user_input}".encode('UTF-8')).hexdigest()
-            # Only cache the policy user query
-            cache.cache(cache_hash, final_content, metadata={"user_input": user_input})
-    except Exception as e:
-        logging.error(f"Response generation failed: {str(e)}")
-        final_content = "\n".join(assistant_messages)  # Fallback to original messages
+            # Patch final_content to make it more readable
+            final_content = final_content.replace("• ", "* ")
+            final_content = final_content.replace("    ", "")
+            # Convert to lowercase for case-insensitive search
+            targets = ["response:", "answer:"]
+
+            for target in targets:
+                lower_content = final_content.lower()
+                # Find the first occurrence index
+                index = lower_content.find(target)
+
+                if index != -1:
+                    # Extract content after "response:" including its original case
+                    result = final_content[index + len(target):]
+                    # Trim leading/trailing whitespace
+                    final_content = result.strip()
+                else:
+                    final_content = final_content.strip()
+
+            if len(final_content) > 0:
+                # Create unique cache id to avoid duplicate requests
+                cache_hash = hashlib.sha256(f"{user_input}".encode('UTF-8')).hexdigest()
+                # Only cache the policy user query
+                cache.cache(cache_hash, final_content, metadata={"user_input": user_input})
+        except Exception as e:
+            logging.error(f"Response generation failed: {str(e)}")
+            # Fallback to intermediate messages if the final LLM call failed (e.g. throttled)
+            fallback_parts = []
+            if document_response and document_response != "N/A":
+                fallback_parts.append(document_response)
+            for msg in state["messages"]:
+                role = msg.get("role")
+                if role in ["document_agent", "search_agent", "calculation_agent", "transaction_agent"] and msg.get(
+                        "content"):
+                    if msg["content"] not in fallback_parts:
+                        fallback_parts.append(msg["content"])
+            final_content = "\n\n".join(
+                fallback_parts) if fallback_parts else "I encountered an error generating the response. Please try again."
 
     return {
         "messages": [{
@@ -1245,16 +1313,28 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
             if kind == "on_chat_model_stream":
                 content = event["data"]["chunk"].content
                 if content:
-                    streamed_content += content
-                    struct = {
-                        "id": str(uuid.uuid4()),
-                        "object": "thread.message.delta",
-                        "created": int(time.time()),
-                        "thread_id": thread_id,
-                        "model": model,
-                        "choices": [{"delta": {"content": content, "role": "assistant"}}],
-                    }
-                    yield _format_resp(struct)
+                    if isinstance(content, list):
+                        text_chunks = []
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text_chunks.append(block.get("text", ""))
+                            elif isinstance(block, str):
+                                text_chunks.append(block)
+                        content_str = "".join(text_chunks)
+                    else:
+                        content_str = str(content)
+
+                    if content_str:
+                        streamed_content += content_str
+                        struct = {
+                            "id": str(uuid.uuid4()),
+                            "object": "thread.message.delta",
+                            "created": int(time.time()),
+                            "thread_id": thread_id,
+                            "model": model,
+                            "choices": [{"delta": {"content": content_str, "role": "assistant"}}],
+                        }
+                        yield _format_resp(struct)
 
             elif kind == "on_tool_start":
                 step_details = {
@@ -1285,7 +1365,7 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
             # and falls back to checking if the event has no parent_ids (which only the root chain does).
             if kind == "on_chain_end" and (
                     event.get("name") in ("LangGraph", "CompiledStateGraph", "__root__") or not event.get(
-                    "parent_ids")):
+                "parent_ids")):
                 if "output" in event["data"]:
                     final_state = event["data"]["output"]
 
