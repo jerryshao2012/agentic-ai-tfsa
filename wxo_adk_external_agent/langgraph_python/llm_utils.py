@@ -41,7 +41,7 @@ def _create_model_instance(model: str, parm_overrides=None):
             from botocore.config import Config
             retry_config = Config(
                 retries={
-                    'max_attempts': 10,
+                    'max_attempts': 4,
                     'mode': 'standard'
                 }
             )
