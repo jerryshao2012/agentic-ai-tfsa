@@ -1,13 +1,12 @@
 # app.py
 import json
 import logging
+import mlflow
 import time
 import uuid
-from typing import Optional, Dict, Any
-
-import mlflow
 from fastapi import FastAPI, Header, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
+from typing import Optional, Dict, Any
 
 from cache_utils import cache_router  # Import cache router
 from llm_utils import get_llm_sync, get_llm_stream
@@ -60,6 +59,29 @@ except Exception as e:
     logger.warning(f"Failed to initialize MLflow: {e}")
 
 
+def _extract_stream_delta_text(chunk: str) -> str:
+    """Extract assistant delta text from one SSE chunk, if present."""
+    if not chunk.startswith("data: "):
+        return ""
+
+    payload = chunk[len("data: "):].strip()
+    if not payload or payload == "[DONE]":
+        return ""
+
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return ""
+
+    text_parts = []
+    for choice in data.get("choices", []):
+        delta = choice.get("delta", {})
+        content = delta.get("content", "")
+        if isinstance(content, str) and content:
+            text_parts.append(content)
+    return "".join(text_parts)
+
+
 @api_app.post("/chat/completions")
 async def chat_completions(
         request: ChatCompletionRequest,
@@ -106,9 +128,6 @@ async def chat_completions(
         if "user_id" in thread_state:
             user_id = thread_state["user_id"]
 
-    # Log access start
-    log_access(user_id, thread_id, is_stream, user_input, "[Generating...]", model)
-
     # Handle single tool case directly
     if len(selected_tools) == 1:
         logger.info("Directly invoking single tool")
@@ -147,18 +166,29 @@ async def chat_completions(
         else:
             # Create an async generator that wraps the async streaming tool
             async def generate_stream():
+                streamed_text_parts = []
                 try:
                     # Call the async streaming tool directly
                     async for chunk in selected_tools[0][1](user_input, thread_id, model):
+                        text_delta = _extract_stream_delta_text(chunk)
+                        if text_delta:
+                            streamed_text_parts.append(text_delta)
                         yield chunk
 
                     # Log access after streaming is complete
+                    final_streamed_text = "".join(streamed_text_parts).strip()
+                    if not final_streamed_text:
+                        final_streamed_text = "[Streaming completed]"
+
                     log_access(user_id, thread_id, is_stream, user_input,
-                               response=f"[{(time.time() - start_time):.3f} seconds] [Streaming completed]",
+                               response=f"[{(time.time() - start_time):.3f} seconds]\n{final_streamed_text}",
                                model=model)
 
                 except Exception as e:
                     logger.error(f"Error in streaming: {str(e)}")
+                    log_access(user_id, thread_id, is_stream, user_input,
+                               response=f"[{(time.time() - start_time):.3f} seconds] Error: {str(e)}",
+                               model=model)
                     # Send error message to client
                     error_struct = {
                         "id": str(uuid.uuid4()),

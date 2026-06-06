@@ -51,6 +51,7 @@ async def invoke(payload, context=None):
     # let AgentCore handle the text/event-stream framing itself.
     if payload.get("stream"):
         async def gen():
+            emitted = False
             async for line in run_tfsa_assistant_stream(prompt, thread_id, model,
                                                         session_id=session_id,
                                                         message_id=message_id):
@@ -66,7 +67,12 @@ async def invoke(payload, context=None):
                 for choice in data.get("choices", []):
                     delta = choice.get("delta", {}).get("content")
                     if delta:
+                        emitted = True
                         yield delta
+
+            # Prevent empty streamed responses reaching the caller.
+            if not emitted:
+                yield "I apologize, but I couldn't answer your question this time. Please try again."
 
         return gen()
 
@@ -75,6 +81,9 @@ async def invoke(payload, context=None):
         run_tfsa_assistant_sync, prompt, thread_id, model,
         session_id=session_id, message_id=message_id
     )
+    text = text if isinstance(text, str) else str(text or "")
+    if not text.strip():
+        text = "I apologize, but I couldn't answer your question this time. Please try again."
     return text
 
 

@@ -157,6 +157,51 @@ def _extract_string_content(content) -> str:
     return str(content).strip()
 
 
+def _extract_amount_from_text(user_input: str) -> float:
+    """Extract a dollar amount from free text; returns 0.0 when absent/invalid."""
+    amount_match = re.search(r"\$?(\d{1,3}(?:,\d{3})*\d*(?:\.\d+)?)", user_input)
+    if not amount_match:
+        return 0.0
+    amount_str = amount_match.group(0).replace(",", "").replace("$", "")
+    try:
+        return float(amount_str)
+    except ValueError:
+        return 0.0
+
+
+def _is_hypothetical_or_probe(user_input: str) -> bool:
+    """Detect prompts that discuss actions hypothetically vs requesting execution."""
+    probe_pattern = (
+        r"\bhypothetical\b|\bsuppose\b|\bwhat if\b|\bimagine\b|\bsimulate\b|\btest\b|"
+        r"\bsafeguard\b|\bbypass\b|\bwithout (?:verification|confirmation)\b|"
+        r"\bvulnerab|\bunauthoriz|\bsecurity\b|\bprotocol\b|\bcould the bot\b"
+    )
+    return bool(re.search(probe_pattern, user_input, re.IGNORECASE))
+
+
+def _is_transaction_request(user_input: str) -> bool:
+    """Return True only for concrete first-person transfer intents, not policy questions."""
+    text = user_input.strip().lower()
+    if not text:
+        return False
+
+    has_action_verb = bool(re.search(r"\b(contribute|deposit|transfer|add|invest)\b", text))
+    if not has_action_verb:
+        return False
+
+    if _is_hypothetical_or_probe(text):
+        return False
+
+    # Questions about capabilities/policies should not trigger transaction execution paths.
+    if "?" in text and not bool(re.search(r"\b(please|go ahead|proceed|execute|do it|i want to)\b", text)):
+        return False
+
+    # Require either explicit execution wording or an amount + action verb.
+    has_execute_phrase = bool(re.search(r"\b(please|go ahead|proceed|execute|do it|i want to)\b", text))
+    has_amount = _extract_amount_from_text(text) > 0
+    return has_execute_phrase or has_amount
+
+
 def _invoke_llm(prompt: str, agent: str):
     """Invoke the shared LLM, tagging the call with its prompt identity when supported.
 
@@ -236,26 +281,26 @@ def _search_for_missing_limits(missing_years: list, current_limits: dict) -> dic
             search_results = search_cra_tfsa_policy.invoke(search_query)
         except Exception as e:
             logging.warning(f"Tavily search failed: {e}. Falling back to DuckDuckGo.")
-            search_results = search_cra_tfsa_policy_duck_duck_go(search_query)
+            search_results = search_cra_tfsa_policy_duck_duck_go.invoke(search_query)
 
         # Use LLM to extract the TFSA limits from search results
         prompt = f"""
         You are a financial policy expert. I need to find the TFSA (Tax-Free Savings Account) 
         annual contribution limits for the following years in Canada: {years_str}.
-        
+
         Here are the search results:
         {json.dumps(search_results, indent=2)}
-        
+
         Known historical limits:
         {json.dumps(current_limits, indent=2)}
-        
+
         Please extract the official TFSA contribution limits for the missing years.
         Provide the information in JSON format with year as key and limit as value:
         {{
             "2025": 7000,
             "2026": 7500
         }}
-        
+
         Only include the years you are confident about. If you cannot find information for a year,
         do not include it in the response. Respond with ONLY the JSON object.
         """
@@ -540,7 +585,7 @@ def search_agent(state: AgentState):
         try:
             results = search_cra_tfsa_policy.invoke(query)
         except:
-            results = search_cra_tfsa_policy_duck_duck_go(query)
+            results = search_cra_tfsa_policy_duck_duck_go.invoke(query)
 
         # Search results: {results}
         # Extract key information. Process results with LLM
@@ -561,7 +606,7 @@ def search_agent(state: AgentState):
           "penalty_info": "One-sentence summary of over-contribution penalties.",
           "withdrawal_rules": "One-sentence summary of withdrawal / re-contribution rules."
         }}
-        
+
 
         Instructions for the "answer" field:
         - If the search results are missing or conflict on a figure, say so rather than inventing one.
@@ -693,25 +738,17 @@ def transaction_agent(state: AgentState):
     # TODO: Encrypt PII data using AES-256
     # TODO: Add transaction confirmation step
     # TODO: Implement fraud detection hooks
-    # Only process if user input contains contribution keywords
-    contribution_keywords = r"contribute|deposit|transfer|add|invest"
-    if not re.search(contribution_keywords, state["user_input"], re.IGNORECASE):
+    # Only execute for concrete user intent, not hypothetical/policy/security probes.
+    if not _is_transaction_request(state["user_input"]):
         return {
             "messages": [{
                 "role": "assistant",
-                "content": "I've gathered the information you requested about TFSA policies."
+                "content": "I can explain TFSA transfer rules and safeguards, but I won't execute a transaction unless you explicitly request one with an amount."
             }]
         }
 
     # Extract amount from user input
-    amount = 0
-    amount_match = re.search(r"\$?(\d{1,3}(?:,\d{3})*\d*(?:\.\d+)?)", state["user_input"])
-    if amount_match:
-        amount_str = amount_match.group(0).replace(",", "").replace("$", "")
-        try:
-            amount = float(amount_str)
-        except ValueError:
-            amount = 0
+    amount = _extract_amount_from_text(state["user_input"])
 
     if amount <= 0:
         return {
@@ -849,7 +886,7 @@ def response_agent(state: AgentState):
     has_calculation = "contribution_room" in state and state["contribution_room"] is not None
     contribution_amount = state.get("contribution_amount")
     has_transaction = "transaction_id" in state or (
-                isinstance(contribution_amount, (int, float)) and contribution_amount > 0)
+            isinstance(contribution_amount, (int, float)) and contribution_amount > 0)
 
     if document_response != "N/A" and not document_needs_search and not has_calculation and not has_transaction:
         logging.info(
@@ -944,7 +981,7 @@ def create_workflow() -> CompiledStateGraph:
             return "calculation_agent"
 
         # Handle transaction requests
-        if re.search(r"contribute|deposit|add|transfer|invest", user_input):
+        if _is_transaction_request(user_input):
             return "calculation_agent"  # Need room calculation first
 
         return "document_agent"
@@ -964,9 +1001,7 @@ def create_workflow() -> CompiledStateGraph:
         user_input = state["user_input"].lower()
 
         # Handle transaction requests
-        transaction_keywords = r"contribute|deposit|add|transfer|invest|yes, i want"
-        if (re.search(transaction_keywords, user_input) or
-                any(word in user_input for word in ["proceed", "execute", "do it"])):
+        if _is_transaction_request(user_input):
             return "transaction_agent"
         # For simple queries like "what is my room?", end after calculation.
         return END
@@ -1104,33 +1139,34 @@ def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
                     "role": "system",
                     "content": f"Workflow execution failed: {str(e)}"
                 })
-                
+
                 # Check for throttling or connection issues
                 error_msg = f"I apologize, but I encountered an error while processing your request: {str(e)}"
                 if "ThrottlingException" in str(e):
                     error_msg = "I apologize, but the AI service is currently experiencing high demand and rate limits. Please try again in a few moments."
                 elif "ValidationException" in str(e):
                     error_msg = f"I apologize, but a validation error occurred: {str(e)}"
-                
+
                 # Ensure accumulated_state has the error message as an assistant response
                 if "messages" not in accumulated_state or not isinstance(accumulated_state["messages"], list):
                     accumulated_state["messages"] = list(state.get("messages", []))
-                
+
                 # Try to extract any intermediate helper messages to give a partial response if possible
                 fallback_parts = []
                 for msg in accumulated_state.get("messages", []):
                     # If any agent had a partial result
                     role = msg.get("role")
-                    if role in ["document_agent", "search_agent", "calculation_agent", "transaction_agent"] and msg.get("content"):
+                    if role in ["document_agent", "search_agent", "calculation_agent", "transaction_agent"] and msg.get(
+                            "content"):
                         if msg["content"] not in fallback_parts:
                             fallback_parts.append(msg["content"])
-                
+
                 if fallback_parts:
                     partial_resp = "\n\n".join(fallback_parts)
                     error_msg = f"{partial_resp}\n\n---\n⚠️ Note: The request was interrupted due to a system issue: {str(e)}"
                     if "ThrottlingException" in str(e):
                         error_msg = f"{partial_resp}\n\n---\n⚠️ Note: The request was interrupted because the AI service is currently experiencing high demand. Please try again in a few moments."
-                
+
                 accumulated_state["messages"].append({
                     "role": "assistant",
                     "content": error_msg
