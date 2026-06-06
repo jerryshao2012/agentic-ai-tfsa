@@ -21,9 +21,9 @@ session_id groups many messages in one conversation; message_id identifies a sin
 turn. Both are accepted from the payload (client-controlled) and fall back to the
 AgentCore runtime session id, then a generated UUID, so logs always carry both.
 """
+import asyncio
 import json
 import uuid
-
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from tfsa_assistant_graph import run_tfsa_assistant_sync, run_tfsa_assistant_stream
@@ -40,11 +40,11 @@ def _resolve_ids(payload, context):
 
 
 @app.entrypoint
-def invoke(payload, context=None):
+async def invoke(payload, context=None):
     """AgentCore invocation handler. Returns a string (sync) or an async generator (stream)."""
     prompt = payload.get("prompt", "")
     thread_id = payload.get("thread_id")  # optional, enables multi-turn via the existing cache
-    model = payload.get("model")          # optional, used only as response metadata
+    model = payload.get("model")  # optional, used only as response metadata
     session_id, message_id = _resolve_ids(payload, context)
 
     # Streaming path: adapt the watsonx-style SSE generator into plain text deltas and
@@ -71,8 +71,10 @@ def invoke(payload, context=None):
         return gen()
 
     # Sync path
-    text, _state = run_tfsa_assistant_sync(prompt, thread_id, model,
-                                           session_id=session_id, message_id=message_id)
+    text, _state = await asyncio.to_thread(
+        run_tfsa_assistant_sync, prompt, thread_id, model,
+        session_id=session_id, message_id=message_id
+    )
     return text
 
 

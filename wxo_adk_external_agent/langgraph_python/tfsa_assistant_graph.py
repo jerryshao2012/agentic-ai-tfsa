@@ -4,17 +4,16 @@ import datetime
 import hashlib
 import json
 import logging
+import mlflow
 import operator
 import os
 import re
 import time
 import uuid
-from typing import AsyncGenerator, TypedDict, Annotated, Optional
-
-import mlflow
 from langchain.tools import tool
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
+from typing import AsyncGenerator, TypedDict, Annotated, Optional
 
 import config
 import data_sources
@@ -29,7 +28,7 @@ except ImportError:
 
 # Structured audit logging (tool calls, full LLM prompt/completion, token usage) for
 # CloudWatch -> S3. Agent-agnostic framework; this graph is its first consumer.
-from agent_obs import AuditCallbackHandler, audited_run, log_event
+from agent_obs import AuditCallbackHandler, audited_run
 
 logging.basicConfig(
     level=logging.INFO,
@@ -107,7 +106,6 @@ def initialize_llm():
 
 llm = initialize_llm()
 
-
 # Stable identifiers for each agent's system prompt, surfaced on llm_call_start events
 # (prompt_name/prompt_version/prompt_role/prompt_hash) so prompts are queryable and diffable
 # in the logs. Bump the version string whenever a prompt's text is changed.
@@ -141,6 +139,7 @@ def _invoke_llm(prompt: str, agent: str):
         return llm.invoke(prompt, config=_prompt_config(agent))
     except TypeError:
         return llm.invoke(prompt)
+
 
 # Constants for TFSA limits file
 TFSA_LIMITS_FILE = "tfsa_limits.json"
@@ -376,9 +375,9 @@ def search_cra_tfsa_policy(query: str) -> list:
     return results
 
 
-# Load or update TFSA limits at startup. Defined here (not near the loader) because
-# _load_or_update_tfsa_limits() depends on the search tools declared above.
-TFSA_LIMITS = _load_or_update_tfsa_limits()
+# Load TFSA limits from the configured data source (or local file/S3) at startup.
+# This prevents module import-time hangs caused by web searches or LLM calls.
+TFSA_LIMITS = data_sources.load_tfsa_limits()
 logging.info(f"TFSA Limits loaded: {TFSA_LIMITS}")
 
 
@@ -1281,8 +1280,12 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
                 }
                 yield _format_resp(struct)
 
-            # Capture the final state at the end of the graph run
-            if kind == "on_chain_end" and event["name"] == "LangGraph":
+            # Capture the final state at the end of the graph run.
+            # Robustly matches various top-level chain names (LangGraph, CompiledStateGraph, __root__)
+            # and falls back to checking if the event has no parent_ids (which only the root chain does).
+            if kind == "on_chain_end" and (
+                    event.get("name") in ("LangGraph", "CompiledStateGraph", "__root__") or not event.get(
+                    "parent_ids")):
                 if "output" in event["data"]:
                     final_state = event["data"]["output"]
 
