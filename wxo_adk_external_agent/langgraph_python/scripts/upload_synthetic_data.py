@@ -38,8 +38,8 @@ TFSA_LIMITS = {
 
 FIRST_NAMES = ["Melanie", "Arjun", "Sofia", "Liam", "Noah", "Priya", "Wei", "Fatima",
                "Diego", "Chloe", "Omar", "Hana", "Lucas", "Ava", "Mateo", "Yuki",
-               "Ngozi", "Ravi", "Elena", "Tariq", "Mia", "Sven", "Aisha", "Carlos",
-               "Ingrid", "Jamal", "Leila", "Pierre", "Sara", "Tomas", "Nadia", "Kenji",
+               "David", "Ravi", "Elena", "Tariq", "Mia", "Sven", "Aisha", "Carlos",
+               "Ingrid", "Hannah", "Leila", "Pierre", "Sara", "Tomas", "Nadia", "Kenji",
                "Grace", "Hassan", "Olivia", "Dimitri"]
 LAST_NAMES = ["Tremblay", "Smith", "Patel", "Nguyen", "Garcia", "Khan", "Wang", "Okafor",
               "Brown", "Singh", "Rossi", "Kim", "Dubois", "Silva", "Cohen", "Ali",
