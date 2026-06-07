@@ -39,7 +39,9 @@ audit_logger.handlers = [_Capture()]
 # Quiet the noisy INFO chatter from the app modules so the summary stands out.
 logging.getLogger().setLevel(logging.WARNING)
 
-from tfsa_assistant_graph import run_tfsa_assistant_sync, cache  # noqa: E402
+from tfsa_assistant_graph import (  # noqa: E402
+    run_tfsa_assistant_sync, cache, _response_cache_key, extract_user_id,
+)
 
 
 def main():
@@ -48,7 +50,10 @@ def main():
         "for over-contributing?"
     )
 
-    # Bypass the response cache so the graph actually runs (cache is keyed on the user input).
+    # Bypass the response cache so the graph actually runs. The cache key is scoped by user_id,
+    # so clear both the resolved-user key and the legacy (user-less) key to be safe.
+    uid = extract_user_id(query) or "unknown"
+    cache.delete(_response_cache_key(query, uid))
     cache.delete(hashlib.sha256(query.encode("UTF-8")).hexdigest())
 
     print(f"\n=== QUERY ===\n{query}\n")
@@ -85,6 +90,13 @@ def main():
     for ev in by_type.get("tool_call_start", []):
         args = json.dumps(ev.get("args"))[:200]
         print(f"    args[{ev.get('tool')}]: {args}")
+
+    print("\n=== DATA SOURCE (profile loads) ===")
+    ds_events = by_type.get("data_source", [])
+    if not ds_events:
+        print("  (no profile loaded this turn)")
+    for ev in ds_events:
+        print(f"  {ev.get('entity')} for user_id={ev.get('user_id')} -> source={ev.get('source')}")
 
     print("\n=== MODEL REASONING (agent_reasoning) ===")
     reasoning_events = by_type.get("agent_reasoning", [])

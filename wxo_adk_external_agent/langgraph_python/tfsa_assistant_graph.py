@@ -195,13 +195,22 @@ def _extract_string_content(content) -> str:
 
 
 def _extract_amount_from_text(user_input: str) -> float:
-    """Extract a dollar amount from free text; returns 0.0 when absent/invalid."""
-    amount_match = re.search(r"\$?(\d{1,3}(?:,\d{3})*\d*(?:\.\d+)?)", user_input)
-    if not amount_match:
+    """Extract a dollar amount from free text; returns 0.0 when absent/invalid.
+
+    Prefers an explicit ``$``-prefixed amount. Otherwise takes a standalone number that is
+    NOT embedded in a word/identifier — so e.g. the "123" in "user_123" is never mistaken for
+    the amount (that bug once let "contribute $500 ... user_123" transact $123).
+    """
+    number = r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?"
+    # 1) Explicit dollar amount, e.g. "$2,000" / "$500.50".
+    match = re.search(rf"\$\s*({number})", user_input)
+    if not match:
+        # 2) A standalone number not preceded/followed by word chars (avoids "user_123").
+        match = re.search(rf"(?<![\w.])({number})(?!\w)", user_input)
+    if not match:
         return 0.0
-    amount_str = amount_match.group(0).replace(",", "").replace("$", "")
     try:
-        return float(amount_str)
+        return float(match.group(1).replace(",", ""))
     except ValueError:
         return 0.0
 
@@ -528,6 +537,9 @@ class AgentState(TypedDict):
     contribution_room: Optional[float]
     current_tfsa_limit: Optional[float]
     contribution_amount: Optional[float]
+    # Top-level intent from the supervisor router (policy|room|contribute), or None when the
+    # rules-based regex router is used. Set by profile_agent, read by the route_* functions.
+    intent: Optional[str]
     # Carried so routing_decision / node_error events emitted from inside the graph group
     # with the turn's other events by conversation + message (trace_id joins automatically).
     session_id: Optional[str]
@@ -629,25 +641,82 @@ def execute_tfsa_contribution(user_id: str, amount: float) -> dict:
 # ======================
 # 3. Agent Definitions
 # ======================
-def profile_agent(state: AgentState):
-    """Retrieves user profile and initializes state"""
+def _has_real_user_id(state: AgentState) -> bool:
+    """True only when a concrete identity was supplied ("unknown" is the no-id sentinel)."""
+    uid = state.get("user_id")
+    return bool(uid) and uid != "unknown"
 
-    if not state.get("user_id"):
-        # Don't require user ID for general questions
-        return {
-            "messages": [{
-                "role": "system",
-                "content": "No user ID provided - processing as general inquiry"
-            }]
-        }
-    profile = retrieve_user_profile.invoke(state["user_id"])
-    return {
-        "user_profile": profile,
-        "messages": [{
-            "role": "system",
-            "content": f"Retrieved profile for {profile['name']} (Age: {profile['age']})"
-        }]
-    }
+
+def _load_profile_into_state(state: AgentState):
+    """Load the user's profile on demand (only lanes that need it call this).
+
+    Returns the profile dict (also cached on state['user_profile']) or None when no real
+    identity was supplied. Emits a ``data_source`` audit event so the logs show whether the
+    answer used real S3 data or the built-in mock fallback (otherwise the two are
+    indistinguishable downstream).
+    """
+    if not _has_real_user_id(state):
+        return None
+    if state.get("user_profile"):
+        return state["user_profile"]
+    uid = state["user_id"]
+    profile = retrieve_user_profile.invoke(uid)
+    source = profile.pop("_source", "unknown") if isinstance(profile, dict) else "unknown"
+    log_event("data_source", agent="tfsa", entity="profile", user_id=uid, source=source,
+              session_id=state.get("session_id"), message_id=state.get("message_id"))
+    state["user_profile"] = profile
+    return profile
+
+
+_VALID_INTENTS = {"policy", "room", "contribute"}
+
+
+def _classify_intent_supervisor(user_input: str) -> Optional[str]:
+    """LLM router: classify the request into policy | room | contribute.
+
+    Returns one of _VALID_INTENTS, or None if the LLM is unavailable / returns something
+    unexpected (callers then fall back to the deterministic regex router).
+    """
+    prompt = f"""You route requests for a TFSA assistant. Classify the user's message into
+exactly one intent.
+
+User message: "{user_input}"
+
+Intents:
+- "policy": general TFSA rules, limits, penalties, eligibility, deadlines, withdrawals.
+- "room": the user wants their available contribution room / how much they can contribute.
+- "contribute": the user wants to make/execute a contribution or transfer money now.
+
+Respond with JSON ONLY:
+{{"reasoning": "one short sentence", "intent": "policy" | "room" | "contribute"}}"""
+    try:
+        response = _invoke_llm(prompt, "supervisor_router")
+        content = _extract_string_content(
+            response.content if hasattr(response, "content") else response)
+        data = _get_json_from_str(content, {})
+        intent = (data.get("intent") or "").strip().lower()
+        return intent if intent in _VALID_INTENTS else None
+    except Exception as e:
+        logging.warning("Supervisor router failed (%s); falling back to rules router.", e)
+        return None
+
+
+def profile_agent(state: AgentState):
+    """Entry node. Does NOT fetch the profile (loaded on demand by the lanes that need it).
+
+    When config.ROUTER_MODE == "supervisor", an LLM classifies the top-level intent here and
+    stores it on state so the route_* functions can act on it (with a regex fallback). In
+    "rules" mode this is a no-op and routing stays purely deterministic.
+    """
+    if config.ROUTER_MODE == "supervisor":
+        intent = _classify_intent_supervisor(state["user_input"])
+        if intent:
+            log_event("agent_reasoning", agent="tfsa", node="supervisor_router",
+                      reasoning=f"classified intent={intent}", intent=intent,
+                      session_id=state.get("session_id"), message_id=state.get("message_id"),
+                      user_id=state.get("user_id"))
+            return {"intent": intent}
+    return {}
 
 
 def document_agent(state: AgentState):
@@ -659,20 +728,21 @@ def document_agent(state: AgentState):
     else:
         user_info = "User: General Inquiry"
 
+    # Use the limits actually loaded from the data source (S3/local), which typically include
+    # the current year — so the model can answer current-year questions WITHOUT a web search.
+    # Only a year missing from this list should trigger needs_current_search.
+    known = sorted(TFSA_LIMITS.items())
+    limits_text = "\n".join(f"    - {year}: ${limit:,}" for year, limit in known) or "    (none loaded)"
+    max_known_year = max(TFSA_LIMITS) if TFSA_LIMITS else current_year - 1
+
     prompt = f"""
     You are a TFSA (Tax-Free Savings Account) policy expert at a Canadian bank.
     Current year: {current_year}
     {user_info}
     User question: {state['user_input']}
 
-    Known annual TFSA contribution limits (fixed historical facts, accurate through 2024):
-    - 2009-2012: $5,000
-    - 2013-2014: $5,500
-    - 2015: $10,000
-    - 2016-2018: $5,500
-    - 2019-2022: $6,000
-    - 2023: $6,500
-    - 2024: $7,000
+    Authoritative annual TFSA contribution limits (from the bank's data source):
+{limits_text}
 
     Known rules:
     - Unused contribution room carries forward indefinitely.
@@ -683,23 +753,21 @@ def document_agent(state: AgentState):
     Respond with JSON ONLY containing:
     {{
       "reasoning": "1-2 sentences: why you chose this answer and whether you need live data. Audit-only.",
-      "policy_summary": "Your answer to the user's question, using only the known facts above.",
+      "policy_summary": "Your answer to the user's question, using only the facts above.",
       "needs_current_search": true/false
     }}
 
     Instructions:
-    - Answer ONLY from the known limits and rules above. Never invent a figure.
-    - Set "needs_current_search" to true whenever a correct answer needs data you do NOT have,
-      i.e. the contribution limit for {current_year} or any year after 2024, or cumulative room
-      that depends on those years. Otherwise set it to false.
-    - If the user asks only about historical limits (2009-2024), set "needs_current_search" to false
-      and list every year range with its amount. Format as:
+    - Answer from the limits and rules above, which are authoritative. Never invent a figure.
+    - The list above already includes the current year ({current_year}) when available, so a
+      current-year limit question is answerable directly.
+    - Set "needs_current_search" to true ONLY if answering needs a year's limit that is NOT in
+      the list above (i.e. a year after {max_known_year}). Otherwise set it to false.
+    - For historical/current limit questions, list the relevant year ranges with their amounts:
         TFSA Annual Contribution Limits:
         [YEAR RANGE]: $AMOUNT
-      and state that cumulative room for someone eligible since 2009 is the sum of all annual
+      and note that cumulative room for someone eligible since 2009 is the sum of all annual
       limits up to and including the year in question.
-    - Do NOT state a limit for {current_year} or any year after 2024; defer those by setting
-      needs_current_search=true.
     """
 
     # Use unified LLM interface. Guard the call: a Bedrock ThrottlingException here (this is the
@@ -856,17 +924,19 @@ def search_agent(state: AgentState):
 
 def calculation_agent(state: AgentState):
     """Calculates contribution room based on profile and policies"""
-    # Check for user ID
-    if not state.get("user_id"):
+    # Require a concrete identity ("unknown" means none was supplied).
+    if not _has_real_user_id(state):
         return {
             "messages": [{
                 "role": "assistant",
-                "content": "I need your user ID to process your contribution. Please provide your user ID."
+                "content": ("I need your user ID to calculate your contribution room. "
+                            "Please provide it (e.g. 'my user id is user_123').")
             }]
         }
+    # Load the profile on demand (emits a data_source event: s3 vs mock).
+    profile = _load_profile_into_state(state)
     # Dynamic contribution room calculation
     current_year = datetime.datetime.now().year
-    profile = state["user_profile"]
 
     # Get current year limit. Double-checked locking: only one concurrent request performs the
     # (expensive, network-bound) refresh; the rest reuse its result instead of each re-searching.
@@ -919,12 +989,13 @@ def calculation_agent(state: AgentState):
 
 def transaction_agent(state: AgentState):
     """Handles transaction execution"""
-    # Check for user ID
-    if not state.get("user_id"):
+    # Require a concrete identity ("unknown" means none was supplied).
+    if not _has_real_user_id(state):
         return {
             "messages": [{
                 "role": "assistant",
-                "content": "I need your user ID to check your contribution room. Please provide your user ID."
+                "content": ("I need your user ID to make a contribution. "
+                            "Please provide it (e.g. 'my user id is user_123').")
             }]
         }
     # TODO: Encrypt PII data using AES-256
@@ -1091,8 +1162,8 @@ def response_agent(state: AgentState):
         logging.info(
             "Bypassing response_agent LLM call: document_agent provided complete answer without search/calculations.")
         final_content = document_response
-        # Cache the result
-        cache_hash = hashlib.sha256(f"{user_input}".encode('UTF-8')).hexdigest()
+        # Cache the result (scoped by user so personalized answers aren't shared)
+        cache_hash = _response_cache_key(user_input, state.get("user_id"))
         cache.cache(cache_hash, final_content, metadata={"user_input": user_input})
     else:
         # Generate final response using LLM
@@ -1137,9 +1208,8 @@ def response_agent(state: AgentState):
                     final_content = final_content.strip()
 
             if len(final_content) > 0:
-                # Create unique cache id to avoid duplicate requests
-                cache_hash = hashlib.sha256(f"{user_input}".encode('UTF-8')).hexdigest()
-                # Only cache the policy user query
+                # Cache the response, scoped by user so it isn't reused across users.
+                cache_hash = _response_cache_key(user_input, state.get("user_id"))
                 cache.cache(cache_hash, final_content, metadata={"user_input": user_input})
         except Exception as e:
             logging.error(f"Response generation failed: {str(e)}")
@@ -1188,6 +1258,18 @@ def create_workflow() -> CompiledStateGraph:
     # Conditional edge after profile agent
     def route_after_profile(state: AgentState):
         """Decide next step after profile_agent"""
+        # Supervisor router: act on the LLM-classified intent when present.
+        intent = state.get("intent")
+        if intent in ("room", "contribute"):
+            _log_route(state, "profile_agent", "calculation_agent",
+                       f"supervisor intent={intent}", "user_profile+room_calc")
+            return "calculation_agent"
+        if intent == "policy":
+            _log_route(state, "profile_agent", "document_agent",
+                       "supervisor intent=policy", "static_policy_kb")
+            return "document_agent"
+
+        # Fallback: deterministic regex router (rules mode, or supervisor returned nothing).
         user_input = state["user_input"].lower()
 
         # Handle calculation requests (contribution room)
@@ -1219,6 +1301,18 @@ def create_workflow() -> CompiledStateGraph:
     # Conditional edge after calculation agent
     def route_after_calculation(state: AgentState):
         """Decide next step after calculation"""
+        # Supervisor router: only an explicit "contribute" intent proceeds to execution.
+        intent = state.get("intent")
+        if intent in ("room", "policy"):
+            _log_route(state, "calculation_agent", "response_agent",
+                       f"supervisor intent={intent} — no transaction", "user_profile+room_calc")
+            return "response_agent"
+        if intent == "contribute":
+            _log_route(state, "calculation_agent", "transaction_agent",
+                       "supervisor intent=contribute", "user_profile+room_calc")
+            return "transaction_agent"
+
+        # Fallback: deterministic regex router.
         user_input = state["user_input"].lower()
 
         # Handle transaction requests
@@ -1226,17 +1320,18 @@ def create_workflow() -> CompiledStateGraph:
             _log_route(state, "calculation_agent", "transaction_agent",
                        "matched execute-transaction intent", "user_profile+room_calc")
             return "transaction_agent"
-        # For simple queries like "what is my room?", end after calculation.
-        _log_route(state, "calculation_agent", "END",
+        # Informational room query: still go through response_agent for a consistent,
+        # polished final answer (same as the policy lane) rather than returning the raw node text.
+        _log_route(state, "calculation_agent", "response_agent",
                    "informational room query — no transaction", "user_profile+room_calc")
-        return END
+        return "response_agent"
 
     workflow.add_conditional_edges(
         "calculation_agent",
         route_after_calculation,
         {
             "transaction_agent": "transaction_agent",
-            END: END
+            "response_agent": "response_agent"
         }
     )
 
@@ -1262,8 +1357,9 @@ def create_workflow() -> CompiledStateGraph:
         }
     )
 
-    # Define terminal edges for the graph
-    workflow.add_edge("transaction_agent", END)
+    # Define terminal edges for the graph. All lanes converge on response_agent so every
+    # answer gets consistent final formatting; response_agent is the single exit to END.
+    workflow.add_edge("transaction_agent", "response_agent")
     workflow.add_edge("search_agent", "response_agent")
     workflow.add_edge("response_agent", END)
 
@@ -1355,6 +1451,10 @@ def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
             try:
                 for step in graph_app.stream(state, config={"callbacks": [handler]}):
                     for node, value in step.items():
+                        # A node that returns no state update streams a None value; skip it so
+                        # accumulated_state.update(None) can't raise.
+                        if not value:
+                            continue
                         # Update accumulated state with node value
                         accumulated_state.update(value)
 
@@ -1726,6 +1826,13 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
         logging.info("run_tfsa_assistant_stream finished in %.3f seconds", time.time() - start_time)
 
 
+def _response_cache_key(user_input: str, user_id: Optional[str]) -> str:
+    """Cache key for a final response, scoped by user_id so personalized answers (e.g. room
+    calculations) are never served to a different user who asks the same question."""
+    uid = user_id or "anon"
+    return hashlib.sha256(f"{uid}::{user_input}".encode("UTF-8")).hexdigest()
+
+
 def _check_cache_initialize_state(user_input: str, thread_id: Optional[str] = None) -> tuple[Optional[str], dict]:
     """
     Check if response is cached and return it if available.
@@ -1748,6 +1855,7 @@ def _check_cache_initialize_state(user_input: str, thread_id: Optional[str] = No
     state.setdefault("contribution_room", None)
     state.setdefault("current_tfsa_limit", None)
     state.setdefault("contribution_amount", None)
+    state.setdefault("intent", None)
     state.setdefault("messages", [])
 
     # Retrieve thread state if exists. Single load (no separate contains() check) that tolerates
@@ -1775,9 +1883,9 @@ def _check_cache_initialize_state(user_input: str, thread_id: Optional[str] = No
         else:
             state["user_id"] = "unknown"
 
-    # Create unique cache id to avoid duplicate requests. Single load that tolerates a None
-    # return (the item can expire between a contains() check and the load).
-    cache_hash = hashlib.sha256(f"{user_input}".encode('UTF-8')).hexdigest()
+    # Look up a cached response, scoped by user so personalized answers aren't shared across
+    # users. Single load that tolerates a None return (item can expire between check and load).
+    cache_hash = _response_cache_key(user_input, state.get("user_id"))
     cache_item = cache.load_from_cache(cache_hash)
     if cache_item is not None:
         return cache_item.get("value", ""), state
