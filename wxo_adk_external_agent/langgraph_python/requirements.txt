@@ -11,15 +11,20 @@ langchain-ibm
 langchain-deepseek
 langchain-ollama
 langchain-tavily
-duckduckgo-search
+# DuckDuckGo fallback: the package was renamed duckduckgo-search -> ddgs, which is what
+# langchain_community's DuckDuckGoSearchAPIWrapper now imports.
+ddgs==9.14.4
 ibm-watsonx-ai
 ibm-watson-machine-learning
 mlflow
 pytest
 
-# Optional: AWS/Bedrock support (install if using bedrock provider)
-# pip install 'langchain[aws]' bedrock-agentcore
-# langchain[aws]
+# AWS/Bedrock support: required to run with AI_SERVICES_PROVIDER=bedrock (ChatBedrockConverse).
+# langchain-aws is the package behind the 'langchain[aws]' extra.
+langchain-aws==1.5.0
+
+# Optional: AWS Bedrock AgentCore deployment tooling (see requirements_agentcore.txt for the
+# full container set). Not needed to run the agent locally.
 # bedrock-agentcore<=0.1.5
 # bedrock-agentcore-starter-toolkit>=0.1.14,<0.2   # any 0.1.x works; don't hard-pin 0.1.14
 # opentelemetry-instrumentation-langchain
