@@ -32,6 +32,12 @@ BEDROCK_MAX_ATTEMPTS = int(os.getenv('BEDROCK_MAX_ATTEMPTS', '10'))
 BEDROCK_READ_TIMEOUT = int(os.getenv('BEDROCK_READ_TIMEOUT', '60'))
 BEDROCK_MAX_TOKENS = int(os.getenv('BEDROCK_MAX_TOKENS', '1024'))
 
+# --- Application-level LLM resilience (provider-agnostic) ---
+# On top of the provider's own transport retries (e.g. Bedrock adaptive mode above), each
+# _invoke_llm call is retried this many times when it raises OR returns empty content, so a
+# transient failure / empty completion becomes a retry instead of a blank reply to the user.
+LLM_INVOKE_ATTEMPTS = int(os.getenv('LLM_INVOKE_ATTEMPTS', '2'))
+
 # --- Native extended thinking (Bedrock/Claude only) ---
 # When true, LLM nodes that opt in (via _invoke_llm(use_thinking=True)) run through a
 # thinking-enabled Claude model and their reasoning blocks are logged on llm_call_end.

@@ -39,11 +39,16 @@ def _create_model_instance(model: str, parm_overrides=None):
             from langchain_aws import ChatBedrockConverse
             import boto3
             from botocore.config import Config
+            # Resilience knobs come from config (env-tunable). "adaptive" mode adds client-side
+            # rate limiting + more retries with backoff; a read timeout ensures a hung call fails
+            # fast (and is retried) instead of stalling the request. See config.py.
             retry_config = Config(
                 retries={
-                    'max_attempts': 4,
-                    'mode': 'standard'
-                }
+                    'max_attempts': config.BEDROCK_MAX_ATTEMPTS,
+                    'mode': 'adaptive'
+                },
+                read_timeout=config.BEDROCK_READ_TIMEOUT,
+                connect_timeout=10
             )
             bedrock_client = boto3.client(
                 service_name="bedrock-runtime",
@@ -52,7 +57,8 @@ def _create_model_instance(model: str, parm_overrides=None):
             )
             return ChatBedrockConverse(model=model if model else config.BEDROCK_MODEL_ID,
                                        client=bedrock_client,
-                                       temperature=defaults.get('temperature', 0))
+                                       temperature=defaults.get('temperature', 0),
+                                       max_tokens=config.BEDROCK_MAX_TOKENS)
         except ImportError:
             raise ValueError(
                 "Bedrock provider selected but 'langchain[aws]' not installed. "

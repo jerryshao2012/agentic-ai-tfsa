@@ -7,7 +7,10 @@ import logging
 import mlflow
 import operator
 import os
+import random
 import re
+import tempfile
+import threading
 import time
 import uuid
 from langchain.tools import tool
@@ -300,16 +303,43 @@ def _invoke_llm(prompt: str, agent: str, use_thinking: bool = False):
     When ``use_thinking`` is set and a thinking-enabled instance exists (config.ENABLE_THINKING
     on Bedrock), the call is routed through it so its reasoning blocks are captured on
     llm_call_end; otherwise it transparently uses the standard temperature=0 ``llm``.
+
+    Resilience: on top of the provider's transport retries, the call is retried up to
+    config.LLM_INVOKE_ATTEMPTS times when it raises OR returns empty content (with jittered
+    backoff). After exhausting attempts it RAISES — so callers' fallbacks produce a useful
+    message instead of the user ever receiving a silent empty reply.
     """
     active_llm = thinking_llm if (use_thinking and thinking_llm is not None) else llm
-    try:
-        return active_llm.invoke(prompt, config=_prompt_config(agent))
-    except TypeError:
-        return active_llm.invoke(prompt)
+    attempts = max(1, config.LLM_INVOKE_ATTEMPTS)
+    last_exc = None
+    for attempt in range(1, attempts + 1):
+        try:
+            try:
+                response = active_llm.invoke(prompt, config=_prompt_config(agent))
+            except TypeError:
+                response = active_llm.invoke(prompt)
+            content = _extract_string_content(
+                response.content if hasattr(response, "content") else response)
+            if content:
+                return response
+            last_exc = ValueError("LLM returned empty content")
+            logging.warning("Empty LLM response for %s (attempt %d/%d); retrying",
+                            agent, attempt, attempts)
+        except Exception as e:
+            last_exc = e
+            logging.warning("LLM call failed for %s (attempt %d/%d): %s",
+                            agent, attempt, attempts, e)
+        if attempt < attempts:
+            time.sleep(min(2.0, 0.5 * attempt) + random.uniform(0, 0.3))
+    raise last_exc if last_exc is not None else RuntimeError(f"LLM call failed for {agent}")
 
 
 # Constants for TFSA limits file
 TFSA_LIMITS_FILE = "tfsa_limits.json"
+
+# Serializes the lazy refresh + file write of TFSA_LIMITS so concurrent requests don't each
+# fire a duplicate search/LLM lookup or corrupt the file via interleaved writes.
+_tfsa_limits_lock = threading.Lock()
 
 
 def _load_or_update_tfsa_limits() -> dict:
@@ -348,11 +378,15 @@ def _load_or_update_tfsa_limits() -> dict:
         updated_limits = _search_for_missing_limits(missing_years, limits)
         if updated_limits:
             limits.update(updated_limits)
-            # Save updated limits to file
+            # Save updated limits to file atomically (write temp + os.replace) so a concurrent
+            # or interrupted write can never leave a half-written / corrupt JSON file behind.
             try:
-                with open(TFSA_LIMITS_FILE, 'w') as f:
-                    # Convert integer keys to strings for JSON serialization
-                    json.dump({str(year): limit for year, limit in limits.items()}, f, indent=2)
+                serialized = {str(year): limit for year, limit in limits.items()}
+                target_dir = os.path.dirname(os.path.abspath(TFSA_LIMITS_FILE))
+                fd, tmp_path = tempfile.mkstemp(dir=target_dir, suffix=".tmp")
+                with os.fdopen(fd, 'w') as f:
+                    json.dump(serialized, f, indent=2)
+                os.replace(tmp_path, TFSA_LIMITS_FILE)
                 logging.info(f"Saved updated TFSA limits to {TFSA_LIMITS_FILE}")
             except Exception as e:
                 logging.warning(f"Failed to save TFSA limits to file: {e}")
@@ -370,12 +404,9 @@ def _search_for_missing_limits(missing_years: list, current_limits: dict) -> dic
         years_str = ", ".join(map(str, missing_years))
         search_query = f"Canada TFSA contribution limits {years_str}"
 
-        # Use Tavily search first, fallback to DuckDuckGo
-        try:
-            search_results = search_cra_tfsa_policy.invoke(search_query)
-        except Exception as e:
-            logging.warning(f"Tavily search failed: {e}. Falling back to DuckDuckGo.")
-            search_results = search_cra_tfsa_policy_duck_duck_go.invoke(search_query)
+        # Resilient web search: Tavily with a DuckDuckGo fallback (handles Tavily's
+        # non-raising error payloads too — see _run_policy_search).
+        search_results = _run_policy_search(search_query)
 
         # Use LLM to extract the TFSA limits from search results
         prompt = f"""
@@ -383,7 +414,7 @@ def _search_for_missing_limits(missing_years: list, current_limits: dict) -> dic
         annual contribution limits for the following years in Canada: {years_str}.
 
         Here are the search results:
-        {json.dumps(search_results, indent=2)}
+        {json.dumps(search_results, indent=2, default=str)}
 
         Known historical limits:
         {json.dumps(current_limits, indent=2)}
@@ -399,8 +430,9 @@ def _search_for_missing_limits(missing_years: list, current_limits: dict) -> dic
         do not include it in the response. Respond with ONLY the JSON object.
         """
 
-        # Use the already initialized LLM
-        response = llm.invoke(prompt)
+        # Use the resilient LLM wrapper (retries + empty-guard); the outer try/except below
+        # degrades to base limits if it ultimately fails.
+        response = _invoke_llm(prompt, "limits_search")
         response_content = _extract_string_content(response.content) if hasattr(response,
                                                                                 'content') else _extract_string_content(
             response)
@@ -546,6 +578,24 @@ def search_cra_tfsa_policy(query: str) -> list:
         "query": f"site:canada.ca TFSA {datetime.datetime.now().year} {query}",
     })
     return results
+
+
+def _run_policy_search(query: str):
+    """Run the CRA policy web search with a resilient Tavily -> DuckDuckGo fallback.
+
+    Tavily's wrapper does NOT raise on quota/auth problems — it returns an
+    ``{"error": <Exception>}`` payload (e.g. "Error 432: usage limit"). A raw exception
+    OR such an error payload is treated as a failure here so we fall back to DuckDuckGo
+    instead of feeding an unusable (and non-JSON-serializable) result downstream.
+    """
+    try:
+        results = search_cra_tfsa_policy.invoke(query)
+        if isinstance(results, dict) and results.get("error"):
+            raise RuntimeError(f"Tavily returned an error payload: {results['error']}")
+        return results
+    except Exception as e:
+        logging.warning("Tavily search unavailable (%s); falling back to DuckDuckGo.", e)
+        return search_cra_tfsa_policy_duck_duck_go.invoke(query)
 
 
 # Load TFSA limits from the configured data source (or local file/S3) at startup.
@@ -706,11 +756,9 @@ def search_agent(state: AgentState):
         # Use original user query instead of fixed term
         query = f"{state['user_input']}"
 
-        # Use DuckDuckGo as fallback if Tavily fails
-        try:
-            results = search_cra_tfsa_policy.invoke(query)
-        except:
-            results = search_cra_tfsa_policy_duck_duck_go.invoke(query)
+        # Resilient web search: Tavily with a DuckDuckGo fallback (also handles Tavily's
+        # non-raising error payloads — see _run_policy_search).
+        results = _run_policy_search(query)
 
         # Search results: {results}
         # Extract key information. Process results with LLM
@@ -720,7 +768,7 @@ def search_agent(state: AgentState):
         Current year: {datetime.datetime.now().year}
 
         Search results:
-        {json.dumps(results, indent=2)}
+        {json.dumps(results, indent=2, default=str)}
 
         The user asked: "{state['user_input']}"
 
@@ -820,10 +868,13 @@ def calculation_agent(state: AgentState):
     current_year = datetime.datetime.now().year
     profile = state["user_profile"]
 
-    # Get current year limit
+    # Get current year limit. Double-checked locking: only one concurrent request performs the
+    # (expensive, network-bound) refresh; the rest reuse its result instead of each re-searching.
     global TFSA_LIMITS
     if current_year not in TFSA_LIMITS:
-        TFSA_LIMITS = _load_or_update_tfsa_limits()
+        with _tfsa_limits_lock:
+            if current_year not in TFSA_LIMITS:  # re-check after acquiring the lock
+                TFSA_LIMITS = _load_or_update_tfsa_limits()
     current_limit = state.get("current_tfsa_limit") or TFSA_LIMITS.get(current_year, 6000)  # Use dynamic limits
 
     # Calculate total accumulated room
@@ -1699,11 +1750,13 @@ def _check_cache_initialize_state(user_input: str, thread_id: Optional[str] = No
     state.setdefault("contribution_amount", None)
     state.setdefault("messages", [])
 
-    # Retrieve thread state if exists
+    # Retrieve thread state if exists. Single load (no separate contains() check) that tolerates
+    # a None return — the entry can expire/disappear between a contains() check and the load.
     if thread_id:
         thread_cache_key = f"thread_state_{thread_id}"
-        if cache.contains(thread_cache_key):
-            state = cache.load_from_cache(thread_cache_key).get("value")
+        cached = cache.load_from_cache(thread_cache_key)
+        if cached and cached.get("value") is not None:
+            state = cached["value"]
     state["user_input"] = user_input
     if "messages" not in state:
         state["messages"] = []
@@ -1722,9 +1775,10 @@ def _check_cache_initialize_state(user_input: str, thread_id: Optional[str] = No
         else:
             state["user_id"] = "unknown"
 
-    # Create unique cache id to avoid duplicate requests
+    # Create unique cache id to avoid duplicate requests. Single load that tolerates a None
+    # return (the item can expire between a contains() check and the load).
     cache_hash = hashlib.sha256(f"{user_input}".encode('UTF-8')).hexdigest()
-    if cache.contains(cache_hash):
-        cache_item = cache.load_from_cache(cache_hash)
+    cache_item = cache.load_from_cache(cache_hash)
+    if cache_item is not None:
         return cache_item.get("value", ""), state
     return None, state

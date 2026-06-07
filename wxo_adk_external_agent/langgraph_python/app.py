@@ -1,4 +1,5 @@
 # app.py
+import asyncio
 import json
 import logging
 import mlflow
@@ -120,13 +121,16 @@ async def chat_completions(
     # Create thread state cache key
     thread_cache_key = f"thread_state_{thread_id}" if thread_id else None
 
-    # Retrieve thread state if exists
+    # Retrieve thread state if exists. Single load off the event loop (blocking file I/O) that
+    # tolerates a None return — the entry can expire between a contains() check and the load.
     thread_state = None
-    if thread_cache_key and cache.contains(thread_cache_key):
-        thread_state = cache.load_from_cache(thread_cache_key).get("value")
-        # Get user ID from thread state
-        if "user_id" in thread_state:
-            user_id = thread_state["user_id"]
+    if thread_cache_key:
+        cached = await asyncio.to_thread(cache.load_from_cache, thread_cache_key)
+        if cached and cached.get("value") is not None:
+            thread_state = cached["value"]
+            # Get user ID from thread state
+            if isinstance(thread_state, dict) and "user_id" in thread_state:
+                user_id = thread_state["user_id"]
 
     # Handle single tool case directly
     if len(selected_tools) == 1:
@@ -134,8 +138,11 @@ async def chat_completions(
 
         # For non-streaming requests
         if not is_stream:
-            # Call the tool directly in synchronous mode
-            tool_response, _ = selected_tools[0][0](user_input, thread_id, model)
+            # run_tfsa_assistant_sync is blocking (LLM + tool + file I/O). Run it in a worker
+            # thread so it never stalls the event loop — otherwise concurrent requests serialize
+            # behind it and time out with an empty reply.
+            tool_response, _ = await asyncio.to_thread(
+                selected_tools[0][0], user_input, thread_id, model)
 
             # Create response
             id = str(uuid.uuid4())
@@ -277,7 +284,9 @@ async def chat_completions(
         # Return streaming response
         return StreamingResponse(wrapped_generator, media_type="text/event-stream")
     else:
-        last_message, all_messages = get_llm_sync(request.messages, model, thread_id, sync_selected_tools)
+        # Blocking call — keep it off the event loop (see note on the single-tool path above).
+        last_message, all_messages = await asyncio.to_thread(
+            get_llm_sync, request.messages, model, thread_id, sync_selected_tools)
         id = str(uuid.uuid4())
         response = ChatCompletionResponse(
             id=id,
