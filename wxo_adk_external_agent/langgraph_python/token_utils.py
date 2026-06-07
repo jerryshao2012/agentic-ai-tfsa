@@ -2,9 +2,8 @@
 import json
 import logging
 import os
-import time
-
 import requests
+import time
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

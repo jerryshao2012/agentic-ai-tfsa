@@ -15,6 +15,7 @@ import logging
 
 try:
     from opentelemetry import trace
+
     _tracer = trace.get_tracer("tfsa.agents")
 except Exception as e:  # opentelemetry not importable at all
     logging.warning(f"OpenTelemetry unavailable, tracing disabled: {e}")
@@ -50,6 +51,7 @@ def traced(name):
     Surfaces the routing ``intent`` as a span attribute when the node returns one,
     and records any exception the node raises.
     """
+
     def deco(fn):
         @functools.wraps(fn)
         def wrapper(state, *args, **kwargs):
@@ -65,5 +67,7 @@ def traced(name):
                     span.record_exception(e)
                     span.set_attribute("error", True)
                     raise
+
         return wrapper
+
     return deco

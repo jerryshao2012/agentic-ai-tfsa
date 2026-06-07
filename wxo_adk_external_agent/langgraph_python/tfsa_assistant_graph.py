@@ -26,6 +26,13 @@ try:
 except ImportError:
     otel = None
 
+def trace_node(name: str):
+    """Decorator to trace a graph node using OpenTelemetry if available."""
+    if otel and hasattr(otel, "traced"):
+        return otel.traced(name)
+    return lambda fn: fn
+
+
 # Structured audit logging (tool calls, full LLM prompt/completion, token usage) for
 # CloudWatch -> S3. Agent-agnostic framework; this graph is its first consumer.
 from agent_obs import AuditCallbackHandler, audited_run
@@ -521,6 +528,7 @@ def execute_tfsa_contribution(user_id: str, amount: float) -> dict:
 # ======================
 # 3. Agent Definitions
 # ======================
+@trace_node("profile_agent")
 def profile_agent(state: AgentState):
     """Retrieves user profile and initializes state"""
 
@@ -542,6 +550,7 @@ def profile_agent(state: AgentState):
     }
 
 
+@trace_node("document_agent")
 def document_agent(state: AgentState):
     """Agent with knowledge of historical TFSA rules"""
     current_year = datetime.datetime.now().year
@@ -615,6 +624,7 @@ def document_agent(state: AgentState):
     }
 
 
+@trace_node("search_agent")
 def search_agent(state: AgentState):
     """Agent that searches for current TFSA policies using Tavily"""
     try:
@@ -705,6 +715,7 @@ def search_agent(state: AgentState):
         }
 
 
+@trace_node("calculation_agent")
 def calculation_agent(state: AgentState):
     """Calculates contribution room based on profile and policies"""
     # Check for user ID
@@ -765,6 +776,7 @@ def calculation_agent(state: AgentState):
     }
 
 
+@trace_node("transaction_agent")
 def transaction_agent(state: AgentState):
     """Handles transaction execution"""
     # Check for user ID
@@ -833,6 +845,7 @@ def transaction_agent(state: AgentState):
         }
 
 
+@trace_node("response_agent")
 def response_agent(state: AgentState):
     """Formats final response using LLM to create coherent human-readable answer"""
     # Collect all assistant messages
