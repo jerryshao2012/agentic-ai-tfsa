@@ -287,7 +287,7 @@ class AuditCallbackHandler(BaseCallbackHandler):
             started = self._llm_starts.pop(str(run_id), None)
             duration_ms = round((time.time() - started) * 1000, 1) if started else None
             llm_output = getattr(response, "llm_output", None)
-            completion, usage, thinking = [], None, None
+            completion, usage, thinking, tool_calls = [], None, None, []
             for batch in getattr(response, "generations", []) or []:
                 for gen in batch:
                     completion.append(_truncate(getattr(gen, "text", "") or ""))
@@ -295,11 +295,22 @@ class AuditCallbackHandler(BaseCallbackHandler):
                         usage = _extract_usage(gen, llm_output)
                     if thinking is None:
                         thinking = _extract_thinking(gen)
+                    # The model's tool-selection lives on the message, not in `text` — capture it
+                    # so "the LLM chose tool X(args)" is explicit on this event.
+                    msg = getattr(gen, "message", None)
+                    for tc in (getattr(msg, "tool_calls", None) or []):
+                        if isinstance(tc, dict):
+                            tool_calls.append({"name": tc.get("name"), "args": _jsonable(tc.get("args"))})
+                        else:
+                            tool_calls.append({"name": getattr(tc, "name", None),
+                                               "args": _jsonable(getattr(tc, "args", None))})
             if usage:
                 for k in self.token_totals:
                     self.token_totals[k] += usage.get(k, 0) or 0
             extra = {"thinking": _truncate(thinking)} if thinking else {}
             # `thinking` is included only when native extended thinking was enabled for the call.
+            if tool_calls:
+                extra["tool_calls"] = tool_calls
             self._emit("llm_call_end", run_id=str(run_id), duration_ms=duration_ms,
                        completion=completion, usage=usage, **extra)
         except Exception as e:

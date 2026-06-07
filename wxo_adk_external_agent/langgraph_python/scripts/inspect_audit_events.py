@@ -122,9 +122,11 @@ def main():
         usage = ev.get("usage") or {}
         total = usage.get("total_tokens") or 0
         total_tokens += total
-        ident = start.get("run_name") or start.get("prompt_name") or "?"
+        ident = start.get("run_name") or start.get("prompt_name") or "advisor/react"
         print(f"  {ident:18} v={start.get('prompt_version')} "
               f"hash={start.get('prompt_hash')} {ev.get('duration_ms')}ms tokens={total}")
+        for tc in ev.get("tool_calls") or []:
+            print(f"      -> selected tool: {tc.get('name')}({json.dumps(tc.get('args'))})")
     for ev in by_type.get("llm_call_error", []):
         print(f"  LLM ERROR: {ev.get('error_type')}: {ev.get('error')}")
     print(f"  --- total tokens this turn: {total_tokens}")

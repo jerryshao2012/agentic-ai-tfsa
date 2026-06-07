@@ -668,7 +668,7 @@ def _load_profile_into_state(state: AgentState):
     return profile
 
 
-_VALID_INTENTS = {"policy", "room", "contribute"}
+_VALID_INTENTS = {"policy", "room", "contribute", "advisory"}
 
 
 def _classify_intent_supervisor(user_input: str) -> Optional[str]:
@@ -683,12 +683,15 @@ exactly one intent.
 User message: "{user_input}"
 
 Intents:
-- "policy": general TFSA rules, limits, penalties, eligibility, deadlines, withdrawals.
+- "policy": a single general TFSA rules/limits/penalties/eligibility/deadlines question.
 - "room": the user wants their available contribution room / how much they can contribute.
 - "contribute": the user wants to make/execute a contribution or transfer money now.
+- "advisory": a compound, what-if, or advice question that needs combining several facts
+  (e.g. "what's my room AND should I top up before year-end?", "what if I withdraw $5k?",
+  "how much room will I have in 2 years?").
 
-Respond with JSON ONLY:
-{{"reasoning": "one short sentence", "intent": "policy" | "room" | "contribute"}}"""
+Respond with raw JSON ONLY — no markdown, no code fences, no extra text:
+{{"reasoning": "one short sentence", "intent": "policy" | "room" | "contribute" | "advisory"}}"""
     try:
         response = _invoke_llm(prompt, "supervisor_router")
         content = _extract_string_content(
@@ -922,6 +925,103 @@ def search_agent(state: AgentState):
         }
 
 
+def _current_year_limit(override: Optional[float] = None) -> float:
+    """Current-year TFSA limit. Refreshes TFSA_LIMITS once (double-checked lock) if the year is
+    missing, so concurrent callers don't each re-search. `override` (e.g. a value already parsed
+    from a live search) takes precedence when truthy."""
+    current_year = datetime.datetime.now().year
+    global TFSA_LIMITS
+    if current_year not in TFSA_LIMITS:
+        with _tfsa_limits_lock:
+            if current_year not in TFSA_LIMITS:  # re-check after acquiring the lock
+                TFSA_LIMITS = _load_or_update_tfsa_limits()
+    return override or TFSA_LIMITS.get(current_year, 6000)
+
+
+def _compute_contribution_room(profile: dict, current_limit: float, current_year: int) -> dict:
+    """Pure TFSA room math shared by calculation_agent and the get_tfsa_room tool.
+
+    Returns {available_room, total_room, used_room}. Accumulated room is the sum of annual
+    limits from the user's first eligible year through the current year; available room
+    subtracts contributions to date and adds back prior-year withdrawals.
+    """
+    birth_year = current_year - profile["age"]
+    first_year = max(profile["first_tfsa_year"], birth_year + 18)
+    total_room = sum(TFSA_LIMITS.get(y, 0) for y in range(first_year, current_year)) + current_limit
+    used_room = profile["past_contributions"] + profile["current_year_contributions"]
+    available_room = total_room - used_room + profile["withdrawals_last_year"]
+    return {"available_room": available_room, "total_room": total_room, "used_room": used_room}
+
+
+# ---- Read-only tools for the advisor (ReAct) node. The LLM selects among these; money
+# movement (execute_tfsa_contribution) is deliberately NOT exposed here. ----
+@tool
+def get_tfsa_room(user_id: str) -> dict:
+    """Get a user's available TFSA contribution room for the current year, with the breakdown
+    (total accumulated room, contributions to date, withdrawals added back)."""
+    profile = data_sources.load_user_profile(user_id)
+    current_year = datetime.datetime.now().year
+    room = _compute_contribution_room(profile, _current_year_limit(), current_year)
+    return {"user_id": user_id, "year": current_year, **room}
+
+
+@tool
+def get_transaction_history(user_id: str) -> list:
+    """Get a user's past TFSA contribution / withdrawal transactions (most useful for
+    explaining how their current contribution room was reached)."""
+    return data_sources.load_user_transactions(user_id)
+
+
+@tool
+def lookup_tfsa_limit(year: int) -> dict:
+    """Look up the annual TFSA contribution limit for a single year."""
+    try:
+        y = int(year)
+    except (ValueError, TypeError):
+        return {"year": year, "limit": None, "error": "invalid year"}
+    _current_year_limit()  # ensure the current year is loaded into TFSA_LIMITS
+    return {"year": y, "limit": TFSA_LIMITS.get(y)}
+
+
+@tool
+def simulate_withdrawal(user_id: str, amount: float) -> dict:
+    """Estimate the effect of withdrawing `amount` from a TFSA now. A withdrawal does NOT free
+    up contribution room in the same year; the amount is added back on January 1 of next year."""
+    current_year = datetime.datetime.now().year
+    profile = data_sources.load_user_profile(user_id)
+    room = _compute_contribution_room(profile, _current_year_limit(), current_year)
+    return {
+        "user_id": user_id,
+        "withdrawal_amount": amount,
+        "room_this_year_after_withdrawal": room["available_room"],  # unchanged this year
+        "room_added_back_on": f"{current_year + 1}-01-01",
+        "room_added_back_amount": amount,
+        "note": "Withdrawals are re-added to contribution room on Jan 1 of the FOLLOWING year.",
+    }
+
+
+@tool
+def project_future_room(user_id: str, years: int = 1) -> dict:
+    """Project a user's available TFSA room `years` years into the future, assuming future annual
+    limits equal the most recent known limit (a projection, not a guarantee)."""
+    current_year = datetime.datetime.now().year
+    profile = data_sources.load_user_profile(user_id)
+    current_limit = _current_year_limit()
+    base = _compute_contribution_room(profile, current_limit, current_year)["available_room"]
+    try:
+        n = max(0, int(years))
+    except (ValueError, TypeError):
+        n = 1
+    return {
+        "user_id": user_id,
+        "current_year": current_year,
+        "available_room_now": base,
+        "projected_years": n,
+        "projected_available_room": base + current_limit * n,
+        "assumption": f"future annual limits assumed = latest known limit (${current_limit:,.0f})",
+    }
+
+
 def calculation_agent(state: AgentState):
     """Calculates contribution room based on profile and policies"""
     # Require a concrete identity ("unknown" means none was supplied).
@@ -935,47 +1035,20 @@ def calculation_agent(state: AgentState):
         }
     # Load the profile on demand (emits a data_source event: s3 vs mock).
     profile = _load_profile_into_state(state)
-    # Dynamic contribution room calculation
     current_year = datetime.datetime.now().year
+    current_limit = _current_year_limit(state.get("current_tfsa_limit"))
 
-    # Get current year limit. Double-checked locking: only one concurrent request performs the
-    # (expensive, network-bound) refresh; the rest reuse its result instead of each re-searching.
-    global TFSA_LIMITS
-    if current_year not in TFSA_LIMITS:
-        with _tfsa_limits_lock:
-            if current_year not in TFSA_LIMITS:  # re-check after acquiring the lock
-                TFSA_LIMITS = _load_or_update_tfsa_limits()
-    current_limit = state.get("current_tfsa_limit") or TFSA_LIMITS.get(current_year, 6000)  # Use dynamic limits
-
-    # Calculate total accumulated room
-    total_room = 0
-    used_room = 0
     if profile:
-        birth_year = current_year - profile["age"]
-        first_year = max(profile["first_tfsa_year"], birth_year + 18)
-
-        total_room = 0
-        for year in range(first_year, current_year):
-            total_room += TFSA_LIMITS.get(year, 0)  # Default to 0 for unknown years
-
-        # Add current year's limit
-        total_room += current_limit
-
-        # Calculate available room
-        used_room = profile["past_contributions"] + profile["current_year_contributions"]
-        available_room = total_room - used_room + profile["withdrawals_last_year"]
-    else:
-        available_room = 0
-
-    # Create user-friendly response
-    if profile:
+        room = _compute_contribution_room(profile, current_limit, current_year)
+        available_room = room["available_room"]
         response = (
             f"Based on your profile, your available TFSA contribution room for {current_year} is ${available_room:.2f}.\n"
-            f"* Total accumulated room: ${total_room:.2f}\n"
-            f"* Contributions to date: ${used_room:.2f}\n"
+            f"* Total accumulated room: ${room['total_room']:.2f}\n"
+            f"* Contributions to date: ${room['used_room']:.2f}\n"
             f"* Withdrawals added back: ${profile['withdrawals_last_year']:.2f}"
         )
     else:
+        available_room = 0
         response = f"Available contribution room: ${available_room:.2f}"
 
     return {
@@ -1054,6 +1127,57 @@ def transaction_agent(state: AgentState):
                 "content": f"❌ Transaction failed: {result['reason']}"
             }]
         }
+
+
+_ADVISOR_TOOLS = [get_tfsa_room, get_transaction_history, lookup_tfsa_limit,
+                  simulate_withdrawal, project_future_room]
+_advisor_react_agent = None
+
+
+def _get_advisor_agent():
+    """Lazily build (once) the ReAct agent that lets the LLM select read-only tools."""
+    global _advisor_react_agent
+    if _advisor_react_agent is None:
+        from langgraph.prebuilt import create_react_agent
+        _advisor_react_agent = create_react_agent(llm, _ADVISOR_TOOLS)
+    return _advisor_react_agent
+
+
+def advisor_agent(state: AgentState, config=None):
+    """LLM tool-calling advisor for advisory / compound / what-if questions.
+
+    The model decides which read-only tools to call (room, limits, history, projections), so the
+    audit stream captures a real plan trace: llm_call -> tool_call(chosen) -> llm_call -> answer.
+    `config` is forwarded so the parent graph's AuditCallbackHandler propagates into the
+    sub-agent's internal LLM + tool calls. Money movement is NOT available here.
+    """
+    uid = state.get("user_id")
+    if _has_real_user_id(state):
+        identity = f"The user's user_id is {uid}; pass it to user-specific tools."
+    else:
+        identity = ("No user_id was provided; if a tool needs one, ask the user for it "
+                    "(e.g. 'my user id is user_123') instead of guessing.")
+    system = (
+        "You are a TFSA advisor at a Canadian bank. Use the available tools to look up the "
+        "user's contribution room, annual limits, and transaction history before answering — "
+        "never invent figures. You cannot move money; if the user wants to contribute, explain "
+        "the steps and ask them to confirm the amount. Be concise and conversational. " + identity
+    )
+    msgs = [{"role": "system", "content": system},
+            {"role": "user", "content": state["user_input"]}]
+    try:
+        result = _get_advisor_agent().invoke({"messages": msgs}, config=config)
+        final = result["messages"][-1].content if result.get("messages") else ""
+        content = _extract_string_content(final)
+    except Exception as e:
+        log_event("node_error", agent="tfsa", node="advisor_agent", error=str(e),
+                  error_type=type(e).__name__, stage="advisor",
+                  session_id=state.get("session_id"), message_id=state.get("message_id"),
+                  user_id=uid)
+        content = ""
+    if not content.strip():
+        content = "I couldn't complete that request right now. Please try again in a moment."
+    return {"messages": [{"role": "assistant", "content": content}]}
 
 
 def response_agent(state: AgentState):
@@ -1250,6 +1374,7 @@ def create_workflow() -> CompiledStateGraph:
     workflow.add_node("search_agent", search_agent)
     workflow.add_node("calculation_agent", calculation_agent)
     workflow.add_node("transaction_agent", transaction_agent)
+    workflow.add_node("advisor_agent", advisor_agent)
     workflow.add_node("response_agent", response_agent)
 
     # Define edges
@@ -1268,6 +1393,10 @@ def create_workflow() -> CompiledStateGraph:
             _log_route(state, "profile_agent", "document_agent",
                        "supervisor intent=policy", "static_policy_kb")
             return "document_agent"
+        if intent == "advisory":
+            _log_route(state, "profile_agent", "advisor_agent",
+                       "supervisor intent=advisory — LLM tool-calling advisor", "advisor_tools")
+            return "advisor_agent"
 
         # Fallback: deterministic regex router (rules mode, or supervisor returned nothing).
         user_input = state["user_input"].lower()
@@ -1294,7 +1423,8 @@ def create_workflow() -> CompiledStateGraph:
         route_after_profile,
         {
             "document_agent": "document_agent",
-            "calculation_agent": "calculation_agent"
+            "calculation_agent": "calculation_agent",
+            "advisor_agent": "advisor_agent"
         }
     )
 
@@ -1357,10 +1487,13 @@ def create_workflow() -> CompiledStateGraph:
         }
     )
 
-    # Define terminal edges for the graph. All lanes converge on response_agent so every
-    # answer gets consistent final formatting; response_agent is the single exit to END.
+    # Define terminal edges for the graph. The policy/room/transaction lanes converge on
+    # response_agent for consistent final formatting. The advisor_agent is itself an LLM agent
+    # that already produces a complete, conversational answer, so it goes straight to END
+    # (avoids a redundant response_agent LLM pass).
     workflow.add_edge("transaction_agent", "response_agent")
     workflow.add_edge("search_agent", "response_agent")
+    workflow.add_edge("advisor_agent", END)
     workflow.add_edge("response_agent", END)
 
     # Compile the graph
