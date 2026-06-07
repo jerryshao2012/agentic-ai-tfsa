@@ -194,6 +194,48 @@ def _extract_string_content(content) -> str:
     return str(content).strip()
 
 
+# Matches a complete <thinking>...</thinking> (or <think>...</think>) block, an unclosed
+# (truncated) opening block, and bare tags. Some models — notably Amazon Nova — emit their
+# chain-of-thought as literal <thinking> text in the reply rather than as a separate content
+# block, so it must be stripped from anything user-facing and kept in logs only.
+_THINKING_BLOCK_RE = re.compile(r"<think(?:ing)?\b[^>]*>.*?</think(?:ing)?\s*>", re.DOTALL | re.IGNORECASE)
+_THINKING_OPEN_RE = re.compile(r"<think(?:ing)?\b[^>]*>.*\Z", re.DOTALL | re.IGNORECASE)
+_THINKING_TAG_RE = re.compile(r"</?think(?:ing)?\b[^>]*>", re.IGNORECASE)
+
+
+def _split_thinking(text: str) -> tuple[str, str]:
+    """Separate a model's literal <thinking> reasoning from the user-facing reply.
+
+    Returns ``(clean_text, thinking_text)``. Handles multiple blocks and a dangling,
+    unclosed block (model cut off mid-reasoning). ``thinking_text`` is the concatenated
+    inner reasoning, intended for LOGS ONLY — it must never be shown to the user.
+    """
+    if not isinstance(text, str) or "<think" not in text.lower():
+        return (text or ""), ""
+    blocks = _THINKING_BLOCK_RE.findall(text)
+    clean = _THINKING_BLOCK_RE.sub("", text)
+    open_match = _THINKING_OPEN_RE.search(clean)  # leftover unclosed <thinking> ... EOF
+    if open_match:
+        blocks.append(open_match.group(0))
+        clean = _THINKING_OPEN_RE.sub("", clean)
+    thinking = "\n".join(_THINKING_TAG_RE.sub("", b).strip() for b in blocks).strip()
+    return clean.strip(), thinking
+
+
+def _stream_safe_clean(raw: str) -> str:
+    """Clean text safe to emit so far while streaming, holding back a trailing partial tag.
+
+    `raw` is the full accumulated raw stream. Strips finished/open <thinking> blocks, then
+    withholds any trailing fragment that could be the start of a tag (e.g. ``<``, ``</thi``)
+    so a tag split across chunks is never emitted before it's resolved.
+    """
+    clean, _ = _split_thinking(raw)
+    partial = re.search(r"<\/?[a-zA-Z]*\Z", clean)
+    if partial:
+        clean = clean[:partial.start()]
+    return clean
+
+
 def _extract_amount_from_text(user_input: str) -> float:
     """Extract a dollar amount from free text; returns 0.0 when absent/invalid.
 
@@ -1169,6 +1211,13 @@ def advisor_agent(state: AgentState, config=None):
         result = _get_advisor_agent().invoke({"messages": msgs}, config=config)
         final = result["messages"][-1].content if result.get("messages") else ""
         content = _extract_string_content(final)
+        # Nova-style models emit chain-of-thought as literal <thinking> text; keep it in the
+        # audit log only and strip it from the user-facing reply.
+        content, thinking = _split_thinking(content)
+        if thinking:
+            log_event("agent_reasoning", agent="tfsa", node="advisor_agent",
+                      reasoning=thinking, session_id=state.get("session_id"),
+                      message_id=state.get("message_id"), user_id=uid)
     except Exception as e:
         log_event("node_error", agent="tfsa", node="advisor_agent", error=str(e),
                   error_type=type(e).__name__, stage="advisor",
@@ -1307,6 +1356,10 @@ def response_agent(state: AgentState):
                 reasoning_part, final_content = final_content.split("###ANSWER###", 1)
                 reasoning_text = re.sub(r'^\s*REASONING:\s*', '', reasoning_part.strip()).strip()
                 final_content = final_content.strip()
+            # Strip any literal <thinking> the model emitted (Nova-style); log it, don't show it.
+            final_content, thinking_text = _split_thinking(final_content)
+            if thinking_text:
+                reasoning_text = f"{reasoning_text}\n{thinking_text}".strip()
             log_event("agent_reasoning", agent="tfsa", node="response_agent",
                       reasoning=reasoning_text,
                       session_id=state.get("session_id"), message_id=state.get("message_id"),
@@ -1571,6 +1624,7 @@ def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
         state["message_id"] = message_id
         handler.set_user(state.get("user_id"))
         if cached_response:
+            cached_response, _ = _split_thinking(cached_response)  # in case an old entry has it
             # Still emit a start/end pair so every message has a mappable input+output.
             with audited_run(handler, user_input=user_input, message_id=message_id):
                 handler.set_output(cached_response)
@@ -1650,6 +1704,11 @@ def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
                               if msg.get('role') == 'assistant']
             if assistant_msgs:
                 assistant_response_text = f"{assistant_msgs[-1]}".strip()
+                # Safety net: strip any <thinking> a node left in (keep it in the audit log).
+                assistant_response_text, leaked_thinking = _split_thinking(assistant_response_text)
+                if leaked_thinking:
+                    handler._emit("agent_reasoning", node="output_filter",
+                                  reasoning=leaked_thinking)
                 if len(assistant_response_text) <= 0:
                     assistant_response_text = "No response generated"
 
@@ -1761,6 +1820,7 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
             run_id = f"run-{uuid.uuid4()}"
 
             # Split the cached response into chunks for streaming simulation
+            cached_response, _ = _split_thinking(cached_response)  # in case an old entry has it
             chunk_size = 50  # Characters per chunk
             chunks = [cached_response[i:i + chunk_size] for i in range(0, len(cached_response), chunk_size)]
 
@@ -1801,8 +1861,10 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
 
         # This will hold the final state of the graph execution
         final_state = {}
-        # This will hold content that has already been streamed to avoid duplication
+        # Raw accumulated model output (may include <thinking>); used to detect tag boundaries.
         streamed_content = ""
+        # Clean text actually emitted to the client (thinking stripped); avoids duplication.
+        emitted_text = ""
 
         # --- Heartbeat and Streaming Logic ---
         event_queue = asyncio.Queue()
@@ -1865,15 +1927,22 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
 
                     if content_str:
                         streamed_content += content_str
-                        struct = {
-                            "id": str(uuid.uuid4()),
-                            "object": "thread.message.delta",
-                            "created": int(time.time()),
-                            "thread_id": thread_id,
-                            "model": model,
-                            "choices": [{"delta": {"content": content_str, "role": "assistant"}}],
-                        }
-                        yield _format_resp(struct)
+                        # Emit only text outside <thinking> blocks. _stream_safe_clean holds
+                        # back a trailing partial tag so a tag split across chunks is never
+                        # streamed; the withheld piece is released once the next chunk resolves it.
+                        clean_so_far = _stream_safe_clean(streamed_content)
+                        delta_str = clean_so_far[len(emitted_text):]
+                        if delta_str:
+                            emitted_text = clean_so_far
+                            struct = {
+                                "id": str(uuid.uuid4()),
+                                "object": "thread.message.delta",
+                                "created": int(time.time()),
+                                "thread_id": thread_id,
+                                "model": model,
+                                "choices": [{"delta": {"content": delta_str, "role": "assistant"}}],
+                            }
+                            yield _format_resp(struct)
 
             elif kind == "on_tool_start":
                 step_details = {
@@ -1915,14 +1984,19 @@ async def run_tfsa_assistant_stream(user_input: str, thread_id: Optional[str] = 
             assistant_msgs = [msg['content'] for msg in final_state.get('messages', [])
                               if msg.get('role') == 'assistant']
             if assistant_msgs:
-                final_response = assistant_msgs[-1]
+                final_response, final_thinking = _split_thinking(assistant_msgs[-1])
+                if final_thinking:
+                    handler._emit("agent_reasoning", node="output_filter", reasoning=final_thinking)
                 handler.set_output(final_response)
-                if final_response and final_response != streamed_content:
+                # Emit only the part not already streamed (nodes that returned a full answer
+                # without token streaming, e.g. advisor_agent -> END).
+                remainder = final_response[len(emitted_text):] if final_response.startswith(emitted_text) else final_response
+                if remainder:
                     struct = {
                         "id": str(uuid.uuid4()),
                         "object": "thread.message.delta",
                         "created": int(time.time()), "thread_id": thread_id, "model": model,
-                        "choices": [{"delta": {"content": final_response, "role": "assistant"}}],
+                        "choices": [{"delta": {"content": remainder, "role": "assistant"}}],
                     }
                     yield _format_resp(struct)
 
