@@ -94,9 +94,11 @@ def load_user_profile(user_id: str) -> dict:
     data = _get_json(key)
     if not isinstance(data, dict):
         # Fallback to the built-in mock, stamped with the requested user_id.
-        data = {"user_id": user_id, **_DEFAULT_PROFILE}
+        # `_source` lets callers log/expose whether real S3 data or the mock was served.
+        data = {"user_id": user_id, "_source": "mock", **_DEFAULT_PROFILE}
     else:
         data.setdefault("user_id", user_id)
+        data["_source"] = "s3"
 
     with _cache_lock:
         _cache[cache_key] = dict(data)
