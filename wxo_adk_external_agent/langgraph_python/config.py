@@ -28,7 +28,7 @@ AWS_REGION = os.getenv('AWS_REGION', os.getenv('BEDROCK_REGION', 'us-east-1'))
 # under load, which surfaces ThrottlingException as "No response generated". "adaptive" mode adds
 # client-side rate limiting + more retries with backoff. max_tokens caps output length (lower =
 # faster + cheaper). Tune via env without a code change.
-BEDROCK_MAX_ATTEMPTS = int(os.getenv('BEDROCK_MAX_ATTEMPTS', '10'))
+BEDROCK_MAX_ATTEMPTS = int(os.getenv('BEDROCK_MAX_ATTEMPTS', '4'))
 BEDROCK_READ_TIMEOUT = int(os.getenv('BEDROCK_READ_TIMEOUT', '60'))
 BEDROCK_MAX_TOKENS = int(os.getenv('BEDROCK_MAX_TOKENS', '1024'))
 
