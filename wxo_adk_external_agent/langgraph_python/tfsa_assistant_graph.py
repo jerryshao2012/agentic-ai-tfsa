@@ -26,6 +26,7 @@ try:
 except ImportError:
     otel = None
 
+
 def trace_node(name: str):
     """Decorator to trace a graph node using OpenTelemetry if available."""
     if otel and hasattr(otel, "traced"):
@@ -41,6 +42,11 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
+
+
+def _should_write_graph_image() -> bool:
+    """Return False when graph image output is disabled via environment flag."""
+    return os.getenv("TFSA_SKIP_GRAPH_IMAGE", "0").strip().lower() not in {"1", "true", "yes", "on"}
 
 
 # Reduces call center volume by 80%+
@@ -1094,13 +1100,14 @@ def create_workflow() -> CompiledStateGraph:
     # Compile the graph
     compiled_state_graph = workflow.compile()
 
-    try:
-        png_graph = compiled_state_graph.get_graph().draw_mermaid_png()
-        with open("tfsa_graph.png", "wb") as f:
-            f.write(png_graph)
-        logging.info(f"Graph saved as 'tfsa_graph.png' in {os.getcwd()}")
-    except Exception as e:
-        logging.warning(f"Could not draw graph: {e}. Please install graphviz and its dependencies.")
+    if _should_write_graph_image():
+        try:
+            png_graph = compiled_state_graph.get_graph().draw_mermaid_png()
+            with open("tfsa_graph.png", "wb") as f:
+                f.write(png_graph)
+            logging.info(f"Graph saved as 'tfsa_graph.png' in {os.getcwd()}")
+        except Exception as e:
+            logging.warning(f"Could not draw graph: {e}. Please install graphviz and its dependencies.")
 
     return compiled_state_graph
 

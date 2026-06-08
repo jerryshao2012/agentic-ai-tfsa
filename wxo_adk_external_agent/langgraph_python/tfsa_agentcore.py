@@ -27,6 +27,9 @@ import os
 import uuid
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
+# Prevent graph image generation when this module imports the workflow graph.
+os.environ.setdefault("TFSA_SKIP_GRAPH_IMAGE", "1")
+
 from tfsa_assistant_graph import run_tfsa_assistant_sync, run_tfsa_assistant_stream
 
 app = BedrockAgentCoreApp()
