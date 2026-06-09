@@ -94,8 +94,9 @@ async def invoke(payload, context=None):
 
     # Sync path: retry a throttled response once (or per env setting) with short backoff.
     text = ""
+    state: dict = {}
     for attempt in range(_THROTTLE_RETRIES + 1):
-        text, _state = await asyncio.to_thread(
+        text, state = await asyncio.to_thread(
             run_tfsa_assistant_sync, prompt, thread_id, model,
             session_id=session_id, message_id=message_id
         )
@@ -107,6 +108,11 @@ async def invoke(payload, context=None):
 
     if not text.strip():
         text = "No response was generated for this request. Please retry."
+
+    # Return a JSON object carrying the structured trace by default; opt out with
+    # {"include_trace": false} to get the legacy plain-string response.
+    if payload.get("include_trace", True):
+        return {"response": text, "trace": (state or {}).get("trace", {})}
     return text
 
 

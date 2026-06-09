@@ -1649,6 +1649,7 @@ def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
             # Still emit a start/end pair so every message has a mappable input+output.
             with audited_run(handler, user_input=user_input, message_id=message_id):
                 handler.set_output(cached_response)
+            state["trace"] = handler.get_trace()
             return cached_response, state
 
         # Execute workflow. The user query is captured structurally by the
@@ -1741,6 +1742,9 @@ def run_tfsa_assistant_sync(user_input: str, thread_id: Optional[str] = None,
         # is the authoritative token source in the AgentCore runtime).
         _log_token_usage()
 
+        # Attach the structured trace AFTER the thread-state cache write above so it isn't
+        # persisted back into thread state (and after audited_run closed, so latency_ms is set).
+        accumulated_state["trace"] = handler.get_trace()
         return assistant_response_text, accumulated_state
     finally:
         logging.info("run_tfsa_assistant_sync finished in %.3f seconds", time.time() - start_time)

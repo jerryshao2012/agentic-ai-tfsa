@@ -27,6 +27,7 @@ All callbacks are defensively wrapped: an observability failure must never break
 """
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import logging
@@ -54,6 +55,91 @@ except Exception:  # opentelemetry not importable
 MAX_FIELD_CHARS = int(os.getenv("AGENT_OBS_MAX_FIELD_CHARS", "200000"))
 
 _AUDIT_LOGGER_NAME = "agent.audit"
+
+# Tool names whose results are surfaced as `retrieved_items` in the built trace.
+_RETRIEVAL_TOOLS = {"retrieve_user_profile", "search_cra_tfsa_policy_duck_duck_go"}
+# Event fields too heavy/sensitive to echo back in the response trace (kept in CloudWatch).
+_RAW_TRACE_DROP_FIELDS = ("prompt", "completion")
+
+
+class TraceCollector:
+    """Accumulates every emitted log_event for one invocation and builds a structured trace.
+
+    Activated for the duration of :func:`audited_run` via the ``_active_trace`` contextvar, so
+    *all* events that funnel through :func:`log_event` (handler callbacks, ``routing_decision``,
+    in-graph ``node_error``, …) are captured with no per-call-site changes. :meth:`build` derives
+    the typed views (agents_called / handoffs / tool_calls / …) from the raw event stream.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def add(self, record: dict) -> None:
+        self.events.append(record)
+
+    def build(self) -> dict:
+        agents_called: list[str] = []
+        handoffs: list[dict] = []
+        tool_calls: list[dict] = []
+        retrieved_items: list[dict] = []
+        errors: list[dict] = []
+        latency_ms: Optional[float] = None
+        # tool args live on tool_call_start; join them onto the tool_call (end) event by run_id.
+        tool_args: dict[str, Any] = {}
+
+        for ev in self.events:
+            et = ev.get("event_type")
+            if et == "agent_node_output":
+                node = ev.get("node")
+                if node and node not in agents_called:
+                    agents_called.append(node)
+            elif et == "routing_decision":
+                handoffs.append({k: ev.get(k) for k in
+                                 ("node", "decision", "reason", "data_selected")})
+            elif et == "tool_call_start":
+                if ev.get("run_id") is not None:
+                    tool_args[ev["run_id"]] = ev.get("args")
+            elif et == "tool_call":
+                tool = ev.get("tool")
+                entry = {"tool": tool, "status": ev.get("status"),
+                         "duration_ms": ev.get("duration_ms"),
+                         "args": tool_args.get(ev.get("run_id"))}
+                if ev.get("status") == "error":
+                    entry["error"] = ev.get("error")
+                    errors.append({"scope": "tool", "tool": tool,
+                                   "error": ev.get("error"),
+                                   "error_type": ev.get("error_type")})
+                else:
+                    entry["result"] = ev.get("result")
+                tool_calls.append(entry)
+                if tool in _RETRIEVAL_TOOLS and ev.get("status") != "error":
+                    retrieved_items.append({"source": tool, "result": ev.get("result")})
+            elif et in ("llm_call_error", "node_error", "invocation_error"):
+                errors.append({"scope": et, "node": ev.get("node"),
+                               "error": ev.get("error"),
+                               "error_type": ev.get("error_type")})
+            elif et == "invocation_end":
+                latency_ms = ev.get("duration_ms")
+
+        raw_trace = [{k: v for k, v in ev.items() if k not in _RAW_TRACE_DROP_FIELDS}
+                     for ev in self.events]
+
+        return {
+            "agents_called": agents_called,
+            "handoffs": handoffs,
+            "tool_calls": tool_calls,
+            "retrieved_items": retrieved_items,
+            "memory_reads": [],   # no memory store yet; key kept for schema stability
+            "memory_writes": [],  # no memory store yet; key kept for schema stability
+            "errors": errors,
+            "latency_ms": latency_ms,
+            "raw_trace": raw_trace,
+        }
+
+
+# Active trace collector for the current invocation (None outside an audited_run).
+_active_trace: contextvars.ContextVar[Optional[TraceCollector]] = contextvars.ContextVar(
+    "agent_obs_trace", default=None)
 
 
 def get_audit_logger(name: str = _AUDIT_LOGGER_NAME) -> logging.Logger:
@@ -168,6 +254,11 @@ def log_event(event_type: str, *, agent: Optional[str] = None, thread_id: Option
         }
         for key, value in fields.items():
             record[key] = _jsonable(value)
+        # Tee into the active trace collector (if any) so the response can carry a structured
+        # trace. log_event is the single chokepoint for all events, so this captures everything.
+        collector = _active_trace.get()
+        if collector is not None:
+            collector.add(record)
         (logger or get_audit_logger()).info(
             json.dumps(record, ensure_ascii=False, default=str)
         )
@@ -252,6 +343,11 @@ class AuditCallbackHandler(BaseCallbackHandler):
 
     def set_output(self, text: Optional[str]) -> None:
         self._output = text
+
+    def get_trace(self) -> dict:
+        """Build the structured trace for this invocation (empty dict if no run was bracketed)."""
+        collector = getattr(self, "_trace_collector", None)
+        return collector.build() if collector is not None else {}
 
     def _emit(self, event_type: str, **fields: Any) -> None:
         log_event(event_type, agent=self.agent, thread_id=self.thread_id,
@@ -372,6 +468,11 @@ def audited_run(handler: AuditCallbackHandler, user_input: str,
     """
     invocation_id = message_id or handler.message_id or str(uuid.uuid4())
     start = time.time()
+    # Activate a trace collector for this invocation so every log_event is teed into it; the
+    # caller can read the structured trace afterwards via handler.get_trace().
+    collector = TraceCollector()
+    handler._trace_collector = collector  # type: ignore[attr-defined]
+    token = _active_trace.set(collector)
     handler._emit("invocation_start", invocation_id=invocation_id, input=user_input)
     status = "success"
     try:
@@ -385,3 +486,4 @@ def audited_run(handler: AuditCallbackHandler, user_input: str,
         handler._emit("invocation_end", invocation_id=invocation_id, status=status,
                       duration_ms=round((time.time() - start) * 1000, 1),
                       token_usage=handler.token_totals, output=handler._output)
+        _active_trace.reset(token)

@@ -13,6 +13,7 @@
 cache/
 *.pkl
 tfsa_limits.json
+clean_sessions/
 
 # --- AgentCore toolkit config (can reference resource names) ---
 .bedrock_agentcore.yaml

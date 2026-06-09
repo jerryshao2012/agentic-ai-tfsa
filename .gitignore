@@ -36,3 +36,6 @@ mlruns/
 # claude
 
 .claude/
+
+# --- Exported session data (may contain user PII) ---
+clean_sessions/
