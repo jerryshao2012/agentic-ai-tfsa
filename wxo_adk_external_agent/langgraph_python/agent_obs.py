@@ -83,12 +83,17 @@ class TraceCollector:
         tool_calls: list[dict] = []
         retrieved_items: list[dict] = []
         errors: list[dict] = []
+        models_used: list[str] = []
         latency_ms: Optional[float] = None
         # tool args live on tool_call_start; join them onto the tool_call (end) event by run_id.
         tool_args: dict[str, Any] = {}
 
         for ev in self.events:
             et = ev.get("event_type")
+            if et in ("llm_call_start", "llm_call_end"):
+                model = ev.get("model")
+                if model and model not in models_used:
+                    models_used.append(model)
             if et == "agent_node_output":
                 node = ev.get("node")
                 if node and node not in agents_called:
@@ -132,6 +137,7 @@ class TraceCollector:
             "memory_reads": [],   # no memory store yet; key kept for schema stability
             "memory_writes": [],  # no memory store yet; key kept for schema stability
             "errors": errors,
+            "models_used": models_used,
             "latency_ms": latency_ms,
             "raw_trace": raw_trace,
         }
@@ -325,6 +331,33 @@ def _extract_thinking(generation: Any) -> Optional[str]:
     return "\n".join(parts) if parts else None
 
 
+def _extract_model(serialized: Any, kwargs: dict, llm_output: Any = None) -> Optional[str]:
+    """Best-effort extraction of the deployed model id/name for an LLM call.
+
+    LangChain surfaces the model in a few places depending on the integration:
+      * ``kwargs["invocation_params"]`` (the bound call params) — ``model`` / ``model_id`` /
+        ``model_name`` (ChatBedrockConverse uses ``model_id``).
+      * ``serialized["kwargs"]`` (the constructor params) — same keys.
+      * ``llm_output`` on ``on_llm_end`` — ``model_name`` / ``model_id`` / ``model``.
+    First non-empty match wins.
+    """
+    keys = ("model_id", "model", "model_name", "deployment_name")
+    sources: list[dict] = []
+    inv = kwargs.get("invocation_params")
+    if isinstance(inv, dict):
+        sources.append(inv)
+    if isinstance(serialized, dict) and isinstance(serialized.get("kwargs"), dict):
+        sources.append(serialized["kwargs"])
+    if isinstance(llm_output, dict):
+        sources.append(llm_output)
+    for src in sources:
+        for key in keys:
+            val = src.get(key)
+            if val:
+                return str(val)
+    return None
+
+
 def _extract_usage(generation: Any, llm_output: Any) -> Optional[dict]:
     """Pull {input,output,total}_tokens from a chat generation or llm_output."""
     msg = getattr(generation, "message", None)
@@ -391,6 +424,7 @@ class AuditCallbackHandler(BaseCallbackHandler):
             prompt = [_jsonable(m) for m in flat]
             self._emit("llm_call_start", run_id=str(run_id),
                        parent_run_id=str(parent_run_id) if parent_run_id else None,
+                       model=_extract_model(serialized, kwargs),
                        prompt=prompt, **_prompt_identity(kwargs, prompt))
         except Exception as e:
             logging.getLogger(__name__).debug("on_chat_model_start failed: %s", e)
@@ -401,6 +435,7 @@ class AuditCallbackHandler(BaseCallbackHandler):
             prompt = [_truncate(p) for p in (prompts or [])]
             self._emit("llm_call_start", run_id=str(run_id),
                        parent_run_id=str(parent_run_id) if parent_run_id else None,
+                       model=_extract_model(serialized, kwargs),
                        prompt=prompt, **_prompt_identity(kwargs, prompt))
         except Exception as e:
             logging.getLogger(__name__).debug("on_llm_start failed: %s", e)
@@ -410,7 +445,7 @@ class AuditCallbackHandler(BaseCallbackHandler):
             started = self._llm_starts.pop(str(run_id), None)
             duration_ms = round((time.time() - started) * 1000, 1) if started else None
             llm_output = getattr(response, "llm_output", None)
-            completion, usage, thinking, tool_calls = [], None, None, []
+            completion, usage, thinking, tool_calls, model = [], None, None, [], None
             for batch in getattr(response, "generations", []) or []:
                 for gen in batch:
                     completion.append(_truncate(getattr(gen, "text", "") or ""))
@@ -418,6 +453,13 @@ class AuditCallbackHandler(BaseCallbackHandler):
                         usage = _extract_usage(gen, llm_output)
                     if thinking is None:
                         thinking = _extract_thinking(gen)
+                    if model is None:
+                        # ChatBedrockConverse stamps the served model on the message's
+                        # response_metadata (model_id / model_name); fall back to llm_output.
+                        gen_msg = getattr(gen, "message", None)
+                        model = _extract_model(
+                            None, {}, getattr(gen_msg, "response_metadata", None)) \
+                            or _extract_model(None, {}, llm_output)
                     # The model's tool-selection lives on the message, not in `text` — capture it
                     # so "the LLM chose tool X(args)" is explicit on this event.
                     msg = getattr(gen, "message", None)
@@ -435,7 +477,7 @@ class AuditCallbackHandler(BaseCallbackHandler):
             if tool_calls:
                 extra["tool_calls"] = tool_calls
             self._emit("llm_call_end", run_id=str(run_id), duration_ms=duration_ms,
-                       completion=completion, usage=usage, **extra)
+                       model=model, completion=completion, usage=usage, **extra)
         except Exception as e:
             logging.getLogger(__name__).debug("on_llm_end failed: %s", e)
 
