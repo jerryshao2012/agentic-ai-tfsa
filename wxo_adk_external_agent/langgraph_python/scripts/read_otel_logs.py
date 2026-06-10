@@ -22,6 +22,10 @@ Examples
     python read_otel_logs.py --day 8 --start-hour 13 --end-hour 15 \
         --grep error --pretty
 
+    # A datetime range that spans days, saved to a file (hourly granularity)
+    python read_otel_logs.py --start "2026-06-08 13:00" --end "2026-06-09 05:00" \
+        --output otel_jun8-9.jsonl
+
     # A different month/year and just list the object keys (no download)
     python read_otel_logs.py --year 2026 --month 6 --day 7 --list-only
 """
@@ -50,6 +54,39 @@ def build_prefix(base: str, year: int, month: int, day: int, hour: int | None) -
     return "/".join(parts) + "/"
 
 
+_DT_FORMATS = (
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%dT%H:%M",
+    "%Y-%m-%d %H",
+    "%Y-%m-%dT%H",
+    "%Y-%m-%d",
+)
+
+
+def parse_dt(s: str) -> dt.datetime:
+    """Parse a start/end argument like '2026-06-08 13:00' or '2026-06-08'."""
+    for fmt in _DT_FORMATS:
+        try:
+            return dt.datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    raise argparse.ArgumentTypeError(
+        f"unrecognized datetime {s!r}; use e.g. '2026-06-08 13:00' or '2026-06-08'"
+    )
+
+
+def iter_partitions(start: dt.datetime, end: dt.datetime):
+    """Yield (year, month, day, hour) for every hour partition in [start, end].
+
+    Partitions are hourly, so minutes only affect which end hours are included
+    (e.g. end=05:00 still includes the whole hour=05 partition)."""
+    cur = start.replace(minute=0, second=0, microsecond=0)
+    last = end.replace(minute=0, second=0, microsecond=0)
+    while cur <= last:
+        yield cur.year, cur.month, cur.day, cur.hour
+        cur += dt.timedelta(hours=1)
+
+
 def iter_objects(s3, bucket: str, prefix: str):
     """Yield (key, size) for every object under prefix, paginating fully."""
     paginator = s3.get_paginator("list_objects_v2")
@@ -72,14 +109,13 @@ def read_object_lines(s3, bucket: str, key: str):
             yield line
 
 
-def emit(line: str, pretty: bool) -> None:
-    if not pretty:
-        print(line)
-        return
-    try:
-        print(json.dumps(json.loads(line), indent=2, ensure_ascii=False))
-    except (json.JSONDecodeError, ValueError):
-        print(line)  # not JSON — print verbatim
+def emit(line: str, pretty: bool, out) -> None:
+    if pretty:
+        try:
+            line = json.dumps(json.loads(line), indent=2, ensure_ascii=False)
+        except (json.JSONDecodeError, ValueError):
+            pass  # not JSON — write verbatim
+    out.write(line + "\n")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -99,29 +135,42 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--hour", type=int, default=None, help="A single hour 0-23 (overrides start/end-hour)")
     p.add_argument("--start-hour", type=int, default=0, help="First hour 0-23 (default: 0)")
     p.add_argument("--end-hour", type=int, default=23, help="Last hour 0-23 inclusive (default: 23)")
+    p.add_argument("--start", type=parse_dt, default=None,
+                   help="Start datetime, e.g. '2026-06-08 13:00'. Spans days; overrides year/month/day/hour")
+    p.add_argument("--end", type=parse_dt, default=None,
+                   help="End datetime (inclusive, hourly). Defaults to end of --start's day")
     p.add_argument("--grep", default=None, help="Only print lines containing this substring")
     p.add_argument("--pretty", action="store_true", help="Pretty-print lines that parse as JSON")
     p.add_argument("--list-only", action="store_true", help="List matching object keys, don't download")
     p.add_argument("--limit", type=int, default=None, help="Stop after printing this many lines")
+    p.add_argument("-o", "--output", default=None,
+                   help="Write records to this file instead of stdout (status messages still go to stderr)")
     return p.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
 
-    if args.hour is not None:
-        hours: list[int | None] = [args.hour]
+    # Build the list of (year, month, day, hour) partitions to scan.
+    if args.start is not None:
+        end = args.end or args.start.replace(hour=23, minute=0)
+        partitions = list(iter_partitions(args.start, end))
+    elif args.hour is not None:
+        partitions = [(args.year, args.month, args.day, args.hour)]
     else:
-        hours = list(range(args.start_hour, args.end_hour + 1))
+        partitions = [(args.year, args.month, args.day, h)
+                      for h in range(args.start_hour, args.end_hour + 1)]
 
     session = boto3.Session(profile_name=args.profile, region_name=args.region)
     s3 = session.client("s3")
 
+    out = open(args.output, "w", encoding="utf-8") if args.output else sys.stdout
+
     printed = 0
     matched_objects = 0
     try:
-        for hour in hours:
-            prefix = build_prefix(args.prefix, args.year, args.month, args.day, hour)
+        for year, month, day, hour in partitions:
+            prefix = build_prefix(args.prefix, year, month, day, hour)
             for key, size in iter_objects(s3, args.bucket, prefix):
                 matched_objects += 1
                 if args.list_only:
@@ -130,7 +179,7 @@ def main(argv: list[str]) -> int:
                 for line in read_object_lines(s3, args.bucket, key):
                     if args.grep and args.grep not in line:
                         continue
-                    emit(line, args.pretty)
+                    emit(line, args.pretty, out)
                     printed += 1
                     if args.limit is not None and printed >= args.limit:
                         print(f"\n[reached --limit {args.limit}]", file=sys.stderr)
@@ -141,11 +190,15 @@ def main(argv: list[str]) -> int:
     except ClientError as e:
         print(f"ERROR: S3 request failed: {e}", file=sys.stderr)
         return 2
+    finally:
+        if out is not sys.stdout:
+            out.close()
 
     if matched_objects == 0:
         print("No objects found for the given partition.", file=sys.stderr)
     elif not args.list_only:
-        print(f"\n[{printed} line(s) from {matched_objects} object(s)]", file=sys.stderr)
+        dest = f" to {args.output}" if args.output else ""
+        print(f"\n[{printed} line(s) from {matched_objects} object(s){dest}]", file=sys.stderr)
     return 0
 
 

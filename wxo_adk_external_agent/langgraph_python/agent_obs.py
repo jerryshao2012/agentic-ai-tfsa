@@ -155,17 +155,20 @@ def get_audit_logger(name: str = _AUDIT_LOGGER_NAME) -> logging.Logger:
     return logger
 
 
-def _trace_ids() -> tuple[Optional[str], Optional[str]]:
-    """(trace_id, span_id) as hex from the current OTEL span, or (None, None)."""
+def _trace_ids() -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """(trace_id, span_id, parent_span_id) as hex from the current OTEL span."""
     if _otel_trace is None:
-        return None, None
+        return None, None, None
     try:
-        ctx = _otel_trace.get_current_span().get_span_context()
+        span = _otel_trace.get_current_span()
+        ctx = span.get_span_context()
         if not ctx or not ctx.trace_id:
-            return None, None
-        return f"{ctx.trace_id:032x}", f"{ctx.span_id:016x}"
+            return None, None, None
+        parent = getattr(span, "parent", None)  # SDK Span exposes parent SpanContext
+        parent_id = f"{parent.span_id:016x}" if parent and getattr(parent, "span_id", 0) else None
+        return f"{ctx.trace_id:032x}", f"{ctx.span_id:016x}", parent_id
     except Exception:
-        return None, None
+        return None, None, None
 
 
 def _truncate(value: Any) -> Any:
@@ -193,6 +196,29 @@ def _jsonable(obj: Any) -> Any:
         out["type"] = mtype
         return out
     return _truncate(str(obj))
+
+
+def _tool_error_msg(result: Any) -> Optional[str]:
+    """LangChain runs on_tool_end for any non-exception return, so a tool that returns
+    {"error": ...} (e.g. a 400 from a search API) was logged as success. Pull that error
+    out of the shapes we emit: {"error": ...}, {"content": '{"error": ...}'}, or a bare
+    JSON string. Returns None when the payload is a genuine success."""
+    def err(d):
+        return d.get("error") if isinstance(d, dict) and d.get("error") else None
+    if isinstance(result, dict):
+        if err(result):
+            return err(result)
+        if isinstance(result.get("content"), str):
+            try:
+                return err(json.loads(result["content"]))
+            except Exception:
+                return None
+    if isinstance(result, str):
+        try:
+            return err(json.loads(result))
+        except Exception:
+            return None
+    return None
 
 
 def _prompt_text(prompt: Any) -> str:
@@ -240,13 +266,14 @@ def log_event(event_type: str, *, agent: Optional[str] = None, thread_id: Option
               **fields: Any) -> None:
     """Emit a single pure-JSON log line. Never raises."""
     try:
-        trace_id, span_id = _trace_ids()
+        trace_id, span_id, parent_span_id = _trace_ids()
         record = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "event_type": event_type,
             "agent": agent,
             "trace_id": trace_id,
             "span_id": span_id,
+            "parent_span_id": parent_span_id,
             "session_id": session_id,
             "message_id": message_id,
             "thread_id": thread_id,
@@ -438,8 +465,16 @@ class AuditCallbackHandler(BaseCallbackHandler):
             started = self._tool_starts.pop(str(run_id), None)
             name = self._tool_starts.pop(f"name:{run_id}", None)
             duration_ms = round((time.time() - started) * 1000, 1) if started else None
-            self._emit("tool_call", run_id=str(run_id), tool=name, status="success",
-                       duration_ms=duration_ms, result=_jsonable(output))
+            # LangChain calls on_tool_end even when a tool returns an error payload; inspect
+            # the result so a {"error": ...} return is logged as error, not a false success.
+            result = _jsonable(output)
+            err = _tool_error_msg(result)
+            fields = {"run_id": str(run_id), "tool": name,
+                      "status": "error" if err else "success",
+                      "duration_ms": duration_ms, "result": result}
+            if err:
+                fields["error"] = err
+            self._emit("tool_call", **fields)
         except Exception as e:
             logging.getLogger(__name__).debug("on_tool_end failed: %s", e)
 

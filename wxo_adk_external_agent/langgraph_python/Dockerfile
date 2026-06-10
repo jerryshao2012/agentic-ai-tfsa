@@ -12,8 +12,6 @@ ENV UV_SYSTEM_PYTHON=1 \
 
 
 
-
-
 COPY requirements_agentcore.txt requirements_agentcore.txt
 # Install from requirements file
 RUN uv pip install -r requirements_agentcore.txt
