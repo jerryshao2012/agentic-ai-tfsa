@@ -16,6 +16,8 @@ import uuid
 from langchain.tools import tool
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.prebuilt import InjectedState
+from langgraph.prebuilt.chat_agent_executor import AgentState as _ReactAgentState
 from typing import AsyncGenerator, TypedDict, Annotated, Optional
 
 import config
@@ -609,8 +611,10 @@ class AgentState(TypedDict):
 def retrieve_user_profile(user_id: str) -> dict:
     """Retrieves user's profile from the configured data source (S3) by user_id.
 
-    Falls back to a built-in mock profile when no S3 bucket is configured or the
-    user's object is missing (see data_sources.load_user_profile).
+    Returns a dict tagged with ``_source``: ``s3`` (real record), ``mock`` (built-in demo data,
+    only when no S3 bucket is configured), ``not_found`` (no record for this user), or
+    ``unavailable`` (store unreachable). Callers must check ``_source`` before trusting fields —
+    a missing user is NOT silently backfilled with mock data (see data_sources.load_user_profile).
     """
     # TODO: gate on an authenticated identity (the user_id is still caller-supplied);
     #       integrate with the bank's SSO / JWT before exposing real PII.
@@ -681,6 +685,12 @@ def execute_tfsa_contribution(user_id: str, amount: float) -> dict:
             "reason": "User ID not provided"
         }
     profile = retrieve_user_profile.invoke(user_id)
+    if not _profile_is_usable(profile):
+        # No real record loaded (missing user or data store unreachable) — never move money
+        # against a fabricated/fallback profile.
+        reason = ("account not found" if profile.get("_source") == "not_found"
+                  else "account records unavailable")
+        return {"status": "failed", "reason": reason}
     if amount > profile["checking_balance"]:
         return {"status": "failed", "reason": "Insufficient funds"}
 
@@ -702,13 +712,48 @@ def _has_real_user_id(state: AgentState) -> bool:
     return bool(uid) and uid != "unknown"
 
 
+# Profiles/transactions carry a "_source" tag (see data_sources). Only "s3" (real record) and
+# "mock" (local-dev demo data) hold usable fields; "not_found"/"unavailable" must NOT be treated
+# as a profile — doing so is what let the agent answer with a stranger's data for a missing user.
+_USABLE_SOURCES = {"s3", "mock"}
+
+
+def _profile_is_usable(profile) -> bool:
+    """True when the loaded record has real fields (source s3 or local-dev mock)."""
+    return isinstance(profile, dict) and profile.get("_source") in _USABLE_SOURCES
+
+
+def _data_source_message(profile) -> str:
+    """User-facing message for a non-usable profile/transactions load (by ``_source``)."""
+    source = profile.get("_source") if isinstance(profile, dict) else None
+    uid = profile.get("user_id") if isinstance(profile, dict) else None
+    if source == "not_found":
+        return f"I couldn't find an account for user id {uid}. Please double-check the ID."
+    # "unavailable" or anything unexpected: don't claim the user is absent.
+    return "I can't reach your account records right now. Please try again in a moment."
+
+
+def _data_source_error(record) -> dict:
+    """Error payload for an advisor tool when a record couldn't be loaded.
+
+    Lands in the captured ``tool_call.result`` so the not-found/unavailable outcome is visible
+    in telemetry, and tells the model to relay it rather than invent figures.
+    """
+    source = record.get("_source") if isinstance(record, dict) else None
+    uid = record.get("user_id") if isinstance(record, dict) else None
+    error = ("account not found" if source == "not_found"
+             else "account records temporarily unavailable")
+    return {"user_id": uid, "error": error, "data_source": source}
+
+
 def _load_profile_into_state(state: AgentState):
     """Load the user's profile on demand (only lanes that need it call this).
 
-    Returns the profile dict (also cached on state['user_profile']) or None when no real
-    identity was supplied. Emits a ``data_source`` audit event so the logs show whether the
-    answer used real S3 data or the built-in mock fallback (otherwise the two are
-    indistinguishable downstream).
+    Returns the loaded record (a dict carrying ``_source``) or None when no real identity was
+    supplied. The record is only cached on ``state['user_profile']`` when usable (s3/mock);
+    ``not_found``/``unavailable`` markers are returned for the caller to surface but never
+    cached as a profile. Emits a ``data_source`` audit event (source now also covers
+    not_found/unavailable) so the outcome is visible in telemetry.
     """
     if not _has_real_user_id(state):
         return None
@@ -716,10 +761,11 @@ def _load_profile_into_state(state: AgentState):
         return state["user_profile"]
     uid = state["user_id"]
     profile = retrieve_user_profile.invoke(uid)
-    source = profile.pop("_source", "unknown") if isinstance(profile, dict) else "unknown"
+    source = profile.get("_source", "unknown") if isinstance(profile, dict) else "unknown"
     log_event("data_source", agent="tfsa", entity="profile", user_id=uid, source=source,
               session_id=state.get("session_id"), message_id=state.get("message_id"))
-    state["user_profile"] = profile
+    if _profile_is_usable(profile):
+        state["user_profile"] = profile
     return profile
 
 
@@ -1013,21 +1059,30 @@ def _compute_contribution_room(profile: dict, current_limit: float, current_year
 
 # ---- Read-only tools for the advisor (ReAct) node. The LLM selects among these; money
 # movement (execute_tfsa_contribution) is deliberately NOT exposed here. ----
+# `user_id` is injected from graph state (the authenticated session id), NOT supplied by the
+# model — the LLM was inventing placeholder ids ("user_id_placeholder") and getting fallback
+# data back. With InjectedState the model can't pass (or guess) an identity.
 @tool
-def get_tfsa_room(user_id: str) -> dict:
+def get_tfsa_room(user_id: Annotated[str, InjectedState("user_id")]) -> dict:
     """Get a user's available TFSA contribution room for the current year, with the breakdown
     (total accumulated room, contributions to date, withdrawals added back)."""
     profile = data_sources.load_user_profile(user_id)
+    if not _profile_is_usable(profile):
+        return _data_source_error(profile)
     current_year = datetime.datetime.now().year
     room = _compute_contribution_room(profile, _current_year_limit(), current_year)
-    return {"user_id": user_id, "year": current_year, **room}
+    return {"user_id": user_id, "year": current_year, "data_source": profile.get("_source"), **room}
 
 
 @tool
-def get_transaction_history(user_id: str) -> list:
+def get_transaction_history(user_id: Annotated[str, InjectedState("user_id")]) -> dict:
     """Get a user's past TFSA contribution / withdrawal transactions (most useful for
     explaining how their current contribution room was reached)."""
-    return data_sources.load_user_transactions(user_id)
+    record = data_sources.load_user_transactions(user_id)
+    if record.get("_source") not in _USABLE_SOURCES:
+        return _data_source_error(record)
+    return {"user_id": user_id, "data_source": record.get("_source"),
+            "transactions": record.get("transactions", [])}
 
 
 @tool
@@ -1042,11 +1097,13 @@ def lookup_tfsa_limit(year: int) -> dict:
 
 
 @tool
-def simulate_withdrawal(user_id: str, amount: float) -> dict:
+def simulate_withdrawal(user_id: Annotated[str, InjectedState("user_id")], amount: float) -> dict:
     """Estimate the effect of withdrawing `amount` from a TFSA now. A withdrawal does NOT free
     up contribution room in the same year; the amount is added back on January 1 of next year."""
     current_year = datetime.datetime.now().year
     profile = data_sources.load_user_profile(user_id)
+    if not _profile_is_usable(profile):
+        return _data_source_error(profile)
     room = _compute_contribution_room(profile, _current_year_limit(), current_year)
     return {
         "user_id": user_id,
@@ -1059,11 +1116,13 @@ def simulate_withdrawal(user_id: str, amount: float) -> dict:
 
 
 @tool
-def project_future_room(user_id: str, years: int = 1) -> dict:
+def project_future_room(user_id: Annotated[str, InjectedState("user_id")], years: int = 1) -> dict:
     """Project a user's available TFSA room `years` years into the future, assuming future annual
     limits equal the most recent known limit (a projection, not a guarantee)."""
     current_year = datetime.datetime.now().year
     profile = data_sources.load_user_profile(user_id)
+    if not _profile_is_usable(profile):
+        return _data_source_error(profile)
     current_limit = _current_year_limit()
     base = _compute_contribution_room(profile, current_limit, current_year)["available_room"]
     try:
@@ -1092,8 +1151,17 @@ def calculation_agent(state: AgentState):
                             "Please provide it (e.g. 'my user id is user_123').")
             }]
         }
-    # Load the profile on demand (emits a data_source event: s3 vs mock).
+    # Load the profile on demand (emits a data_source event: s3 / mock / not_found / unavailable).
     profile = _load_profile_into_state(state)
+    # Don't compute against a profile we couldn't actually load — surface why instead of
+    # falling through to a stranger's data or a misleading $0.00.
+    if not _profile_is_usable(profile):
+        return {
+            "messages": [{
+                "role": "assistant",
+                "content": _data_source_message(profile),
+            }]
+        }
     current_year = datetime.datetime.now().year
     current_limit = _current_year_limit(state.get("current_tfsa_limit"))
 
@@ -1194,12 +1262,22 @@ _ADVISOR_TOOLS = [get_tfsa_room, get_transaction_history, lookup_tfsa_limit,
 _advisor_react_agent = None
 
 
+class _AdvisorState(_ReactAgentState):
+    """State schema for the advisor ReAct sub-agent.
+
+    Extends the prebuilt ReAct state (``messages`` + ``remaining_steps``) with the authenticated
+    ``user_id`` so the read-only tools can receive it via ``InjectedState`` instead of accepting a
+    model-supplied (and previously hallucinated) one.
+    """
+    user_id: str
+
+
 def _get_advisor_agent():
     """Lazily build (once) the ReAct agent that lets the LLM select read-only tools."""
     global _advisor_react_agent
     if _advisor_react_agent is None:
         from langgraph.prebuilt import create_react_agent
-        _advisor_react_agent = create_react_agent(llm, _ADVISOR_TOOLS)
+        _advisor_react_agent = create_react_agent(llm, _ADVISOR_TOOLS, state_schema=_AdvisorState)
     return _advisor_react_agent
 
 
@@ -1213,21 +1291,31 @@ def advisor_agent(state: AgentState, config=None):
     sub-agent's internal LLM + tool calls. Money movement is NOT available here.
     """
     uid = state.get("user_id")
-    if _has_real_user_id(state):
-        identity = f"The user's user_id is {uid}; pass it to user-specific tools."
-    else:
-        identity = ("No user_id was provided; if a tool needs one, ask the user for it "
-                    "(e.g. 'my user id is user_123') instead of guessing.")
+    # Require a concrete identity up front ("unknown" means none was supplied) — without it the
+    # user-specific tools have nothing to look up, and the model would otherwise guess an id.
+    if not _has_real_user_id(state):
+        return {
+            "messages": [{
+                "role": "assistant",
+                "content": ("I need your user ID to look that up. "
+                            "Please provide it (e.g. 'my user id is user_123').")
+            }]
+        }
+    # The user_id is injected into the tools from state (InjectedState), so the model never
+    # supplies it; it only chooses which tool to call.
     system = (
         "You are a TFSA advisor at a Canadian bank. Use the available tools to look up the "
         "user's contribution room, annual limits, and transaction history before answering — "
-        "never invent figures. You cannot move money; if the user wants to contribute, explain "
-        "the steps and ask them to confirm the amount. Be concise and conversational. " + identity
+        "never invent figures. The signed-in user's account is already provided to the tools, so "
+        "just call them; do not ask for or pass a user id. If a tool reports the account was not "
+        "found or is unavailable, relay that instead of guessing. You cannot move money; if the "
+        "user wants to contribute, explain the steps and ask them to confirm the amount. Be "
+        "concise and conversational."
     )
     msgs = [{"role": "system", "content": system},
             {"role": "user", "content": state["user_input"]}]
     try:
-        result = _get_advisor_agent().invoke({"messages": msgs}, config=config)
+        result = _get_advisor_agent().invoke({"messages": msgs, "user_id": uid}, config=config)
         final = result["messages"][-1].content if result.get("messages") else ""
         content = _extract_string_content(final)
         # Nova-style models emit chain-of-thought as literal <thinking> text; keep it in the

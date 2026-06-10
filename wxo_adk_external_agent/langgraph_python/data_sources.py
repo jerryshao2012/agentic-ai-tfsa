@@ -22,6 +22,7 @@ import threading
 from typing import Optional
 
 import config
+import otel_utils
 
 # Built-in mock profile (the historical hardcoded "Melanie" record). Used as the
 # fallback when no S3 bucket is configured or the object is missing.
@@ -60,30 +61,60 @@ def _s3():
     return _s3_client or None
 
 
-def _get_json(key: str):
-    """GetObject + json.loads for a key in DATA_S3_BUCKET. Returns None on any miss/error."""
+def _get_object(key: str):
+    """GetObject + json.loads for a key in DATA_S3_BUCKET, with an explicit outcome status.
+
+    Returns ``(status, data)`` where ``status`` is one of:
+      * ``"found"``        - object fetched and parsed (``data`` is the parsed JSON)
+      * ``"unconfigured"`` - no DATA_S3_BUCKET set (pure local dev; mock is acceptable)
+      * ``"not_found"``    - bucket reachable but the object does not exist (genuine miss)
+      * ``"unavailable"``  - boto3/creds missing or any other S3 error (transient; do NOT
+                             confuse with not_found, and do NOT fabricate data)
+
+    Collapsing these into a single ``None`` is what let a missing user silently become the
+    built-in mock, so callers must branch on the status.
+    """
     bucket = config.DATA_S3_BUCKET
     if not bucket:
-        return None
+        return ("unconfigured", None)
     client = _s3()
     if client is None:
-        return None
+        return ("unavailable", None)
     try:
         obj = client.get_object(Bucket=bucket, Key=key)
-        return json.loads(obj["Body"].read())
+        return ("found", json.loads(obj["Body"].read()))
     except client.exceptions.NoSuchKey:  # type: ignore[union-attr]
         logging.info("S3 object not found: s3://%s/%s", bucket, key)
-        return None
+        return ("not_found", None)
     except Exception as e:
         logging.warning("Failed to load s3://%s/%s: %s", bucket, key, e)
-        return None
+        return ("unavailable", None)
+
+
+def _get_json(key: str):
+    """GetObject + json.loads for a key in DATA_S3_BUCKET. Returns None on any miss/error.
+
+    Back-compat shim for callers that only care about the payload (e.g. limits, which have
+    their own local-file fallback). New code that must tell a miss from an outage should use
+    :func:`_get_object` instead.
+    """
+    return _get_object(key)[1]
 
 
 def load_user_profile(user_id: str) -> dict:
-    """Return the profile for user_id from S3, or the built-in mock as fallback.
+    """Return the profile for user_id, tagging the outcome in ``_source``.
 
-    Always returns a dict that includes user_id so downstream code (which reads
-    profile["user_id"]) is unaffected.
+    Always returns a dict carrying ``user_id`` and ``_source``; callers MUST branch on
+    ``_source`` before trusting profile fields:
+      * ``"s3"``          - real record (profile fields present)
+      * ``"mock"``        - built-in demo record, ONLY when no S3 bucket is configured
+                            (local dev); profile fields present
+      * ``"not_found"``   - bucket reachable but no object for this user; NO profile fields
+      * ``"unavailable"`` - S3 unreachable / no creds; NO profile fields
+
+    Never substitutes the mock for a configured-but-missing user — doing so let the agent
+    present a stranger's data as the caller's. Emits the outcome as a span attribute so the
+    fallback is observable regardless of which lane loaded the profile.
     """
     cache_key = f"profile:{user_id}"
     with _cache_lock:
@@ -91,18 +122,26 @@ def load_user_profile(user_id: str) -> dict:
             return dict(_cache[cache_key])  # copy so callers can't mutate the cache
 
     key = f"{config.PROFILE_S3_PREFIX}/{user_id}.json"
-    data = _get_json(key)
-    if not isinstance(data, dict):
-        # Fallback to the built-in mock, stamped with the requested user_id.
-        # `_source` lets callers log/expose whether real S3 data or the mock was served.
-        data = {"user_id": user_id, "_source": "mock", **_DEFAULT_PROFILE}
-    else:
-        data.setdefault("user_id", user_id)
-        data["_source"] = "s3"
+    status, data = _get_object(key)
+    if status == "found" and isinstance(data, dict):
+        result = {**data, "user_id": user_id, "_source": "s3"}
+    elif status == "unconfigured":
+        # Local dev without S3: the built-in mock is the intended behavior (flagged).
+        result = {"user_id": user_id, "_source": "mock", **_DEFAULT_PROFILE}
+    elif status == "not_found":
+        result = {"user_id": user_id, "_source": "not_found"}
+    else:  # "unavailable" (or a "found" payload that wasn't a dict)
+        result = {"user_id": user_id, "_source": "unavailable"}
 
-    with _cache_lock:
-        _cache[cache_key] = dict(data)
-    return data
+    source = result["_source"]
+    otel_utils.set_attr("tfsa.data.profile_source", source)
+    otel_utils.set_attr("tfsa.data.user_found", source == "s3")
+
+    # Don't cache "unavailable" — it's transient and should be retried next call.
+    if source != "unavailable":
+        with _cache_lock:
+            _cache[cache_key] = dict(result)
+    return result
 
 
 def load_tfsa_limits() -> dict:
@@ -141,21 +180,37 @@ def load_tfsa_limits() -> dict:
     return limits
 
 
-def load_user_transactions(user_id: str) -> list:
-    """Return the synthetic transaction history for user_id from S3, or [] as fallback."""
+def load_user_transactions(user_id: str) -> dict:
+    """Return the transaction history for user_id, tagged with the load outcome.
+
+    Returns ``{"user_id", "_source", "transactions": [...]}`` so a genuinely-missing user
+    (``_source`` ``not_found``/``unavailable``) is distinguishable from a real user who simply
+    has no transactions (``s3``/``mock`` with an empty list). ``_source`` mirrors
+    :func:`load_user_profile`.
+    """
     cache_key = f"txns:{user_id}"
     with _cache_lock:
         if cache_key in _cache:
-            return list(_cache[cache_key])
+            return dict(_cache[cache_key])
 
     key = f"{config.TRANSACTIONS_S3_PREFIX}/{user_id}.json"
-    data = _get_json(key)
-    if not isinstance(data, list):
-        data = []
+    status, data = _get_object(key)
+    if status == "found":
+        result = {"user_id": user_id, "_source": "s3",
+                  "transactions": data if isinstance(data, list) else []}
+    elif status == "unconfigured":
+        result = {"user_id": user_id, "_source": "mock", "transactions": []}
+    elif status == "not_found":
+        result = {"user_id": user_id, "_source": "not_found", "transactions": []}
+    else:  # "unavailable"
+        result = {"user_id": user_id, "_source": "unavailable", "transactions": []}
 
-    with _cache_lock:
-        _cache[cache_key] = list(data)
-    return data
+    otel_utils.set_attr("tfsa.data.txns_source", result["_source"])
+
+    if result["_source"] != "unavailable":
+        with _cache_lock:
+            _cache[cache_key] = dict(result)
+    return result
 
 
 def clear_cache() -> None:
