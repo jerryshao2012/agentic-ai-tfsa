@@ -1,5 +1,3 @@
-# NextGen Cyber
-
 ## TFSA Multi-Agent System Architecture
 
 The defender under evaluation is a multi-agent TFSA assistant designed to support users with TFSA-related tasks such as policy interpretation, contribution room calculations, transaction execution, and financial guidance.

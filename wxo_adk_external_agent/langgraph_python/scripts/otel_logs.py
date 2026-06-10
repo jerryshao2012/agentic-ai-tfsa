@@ -36,14 +36,34 @@ import json
 import os
 import random
 import sys
+import time
 from collections import defaultdict
 
 import boto3
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.config import Config
+from botocore.exceptions import (
+    ClientError,
+    ConnectionError as BotoConnectionError,
+    IncompleteReadError,
+    NoCredentialsError,
+    ReadTimeoutError,
+    ResponseStreamingError,
+)
 
 DEFAULT_BUCKET = "agent-otel-logs-668864905269-us-east-1-tfsa-agent"
 DEFAULT_PREFIX = "agent-otel-logs"
 DEFAULT_REGION = "us-east-1"
+
+# Transient errors worth retrying when streaming an object body. These come from
+# dropped/flaky connections mid-download, not from the request itself, so botocore's
+# built-in request retries don't cover them.
+_RETRYABLE = (
+    ResponseStreamingError,
+    IncompleteReadError,
+    ReadTimeoutError,
+    BotoConnectionError,
+)
+_MAX_RETRIES = 5
 
 
 # --------------------------------------------------------------------------- source
@@ -94,9 +114,24 @@ def iter_objects(s3, bucket: str, prefix: str):
             yield obj["Key"], obj["Size"]
 
 
+def download_object(s3, bucket: str, key: str) -> bytes:
+    """Fetch an object's full body, retrying transient streaming/connection drops."""
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            return s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+        except _RETRYABLE as e:
+            if attempt == _MAX_RETRIES:
+                raise
+            backoff = min(2 ** (attempt - 1), 10)
+            print(f"WARN: read failed for {key} (attempt {attempt}/{_MAX_RETRIES}): {e}; "
+                  f"retrying in {backoff}s", file=sys.stderr)
+            time.sleep(backoff)
+    raise AssertionError("unreachable")  # loop either returns or raises
+
+
 def read_object_lines(s3, bucket: str, key: str):
     """Download an object, gunzip if needed, and yield non-empty text lines."""
-    body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+    body = download_object(s3, bucket, key)
     if body[:2] == b"\x1f\x8b":  # gzip magic number
         try:
             body = gzip.decompress(body)
@@ -142,7 +177,12 @@ def source_prefixes(args: argparse.Namespace) -> list[str]:
 
 
 def make_s3(args: argparse.Namespace):
-    return boto3.Session(profile_name=args.profile, region_name=args.region).client("s3")
+    cfg = Config(
+        retries={"max_attempts": _MAX_RETRIES, "mode": "adaptive"},
+        connect_timeout=30,
+        read_timeout=120,
+    )
+    return boto3.Session(profile_name=args.profile, region_name=args.region).client("s3", config=cfg)
 
 
 def iter_source_lines(args: argparse.Namespace):
